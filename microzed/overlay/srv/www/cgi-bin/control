@@ -1,0 +1,35 @@
+#!/bin/sh
+# Handles button presses from the status page (POST only).
+# LED commands go to leddaemon through its FIFO; only exact values are accepted.
+FIFO=/tmp/led.fifo
+PIDFILE=/var/run/leddaemon.pid
+
+redirect() {
+  echo "Status: 303 See Other"
+  echo "Location: /cgi-bin/status"
+  echo ""
+  exit 0
+}
+
+# Send a command only if the daemon is running (writing to a FIFO with no
+# reader would block forever).
+send() {
+  [ -f $PIDFILE ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null && [ -p $FIFO ] \
+    && echo "$1" > $FIFO
+}
+
+[ "$REQUEST_METHOD" = "POST" ] || redirect
+BODY=$(head -c "${CONTENT_LENGTH:-0}")
+
+case "$BODY" in
+  action=led_on)     send on;     redirect ;;
+  action=led_off)    send off;    redirect ;;
+  action=led_toggle) send toggle; redirect ;;
+  action=poweroff)
+    echo "Content-Type: text/html"
+    echo ""
+    echo "<h2>Powering off...</h2><p>Unplug the board after the console shows 'System halted' (about 10 s).</p>"
+    (sleep 2; poweroff) </dev/null >/dev/null 2>&1 &
+    exit 0 ;;
+  *) redirect ;;
+esac
