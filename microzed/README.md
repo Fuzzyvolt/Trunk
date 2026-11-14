@@ -10,6 +10,7 @@ Source for the programs and the Buildroot rootfs overlay used in `buildroot-micr
 | `apps/blink.c` | Blinks LED D3 until PB1 is pressed (libgpiod v1) |
 | `apps/leddaemon.c` | Daemon that owns LED D3 and PB1; takes commands from `/tmp/led.fifo` |
 | `modules/hello/` | First kernel module (own Makefile, builds against the Buildroot kernel) |
+| `modules/myled/` | Character driver: `/dev/myled` controls LED D3 (`echo 1`, `echo 0`, `echo t`, `cat`) |
 | `overlay/` | Files copied into the board's root filesystem (mirrors `/`) |
 | `overlay/etc/init.d/S90httpd` | Starts BusyBox httpd at boot |
 | `overlay/etc/init.d/S99leddaemon` | Starts leddaemon at boot |
@@ -82,3 +83,20 @@ rmmod hello
 ```
 
 A module only loads into the exact kernel it was built against. After a kernel change in Buildroot, rebuild the module.
+
+### myled (character driver)
+
+```bash
+cd ~/trunk/microzed/modules/myled && make push
+```
+
+On the board (stop leddaemon first, only one user of the LED line at a time):
+
+```bash
+/etc/init.d/S99leddaemon stop
+insmod /root/myled.ko
+echo 1 > /dev/myled
+cat /dev/myled
+rmmod myled
+/etc/init.d/S99leddaemon start
+```
