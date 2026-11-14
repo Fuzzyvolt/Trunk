@@ -53,3 +53,11 @@ make overlay    # copy into ~/mz-overlay for the next image
 - Logs: `logread | grep leddaemon` (or `/var/log/messages`).
 - Debug in the foreground: stop the service, then run `leddaemon -f`.
 - `blink` and `gpioset` on lines 47/51 fail with "Device or resource busy" while the daemon runs. Stop it first.
+
+## Flash the SD card in one step
+
+```bash
+make flash
+```
+
+This copies the overlay, rebuilds the Buildroot image, then runs `flash-sd.sh`: it checks that `/dev/sdb` is a removable card (never the PC's own disk), shows it, asks you to type `yes`, unmounts, writes with `dd`, syncs and ejects. Use `make flash SD=/dev/sdc` if the card has another name, or `./flash-sd.sh` to flash the existing image without rebuilding.
