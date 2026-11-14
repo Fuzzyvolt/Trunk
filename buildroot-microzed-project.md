@@ -1,6 +1,6 @@
 # Buildroot + QEMU + MicroZed: project summary
 
-Last updated: 2026-11-14
+Last updated: 2026-11-14 (evening)
 
 Load this file at the start of a new session to continue the project.
 
@@ -32,6 +32,10 @@ The learner has little hands-on embedded Linux experience. Explain from the basi
 | Boot: QSPI (factory) | JP3 2-3, JP2 1-2, JP1 1-2 |
 | Boot: SD card (current) | JP3 2-3, **JP2 2-3**, JP1 1-2 |
 | Reset button SW2 | Does **not** re-read the boot jumpers; power-cycle after changing them |
+| Ethernet PHY | Marvell 88E1512, RGMII on MIO 16-27, MDC = MIO52, MDIO = MIO53 (1.8 V bank 501), own 25 MHz oscillator |
+| PHY reset (ETH_RST_N, PHY pin 16) | **No MIO pin.** Driven by PG_MODULE (3.3 V power-good = board power-on reset) through level translator U8. Software cannot reset the PHY |
+| SW2 (PS_SRST#) | Resets the processor and PL only, **not** the PHY |
+| USB PHY reset | MIO7 (AND-ed with PG_MODULE) |
 
 The factory QSPI image (U-Boot 2013.01 and an old Linux) is still in flash, untouched.
 
@@ -77,13 +81,50 @@ Harmless boot messages:
 
 ## Current state (where we stopped)
 
-As of 2026-11-14 (afternoon): **GPIO works and SSH works.**
+As of 2026-11-14 (evening): **GPIO, SSH, cross-compiled C programs, rootfs overlay and a status web page all work.** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below).
 
-1. `~/br-microzed/.config` has: `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), a root password, and `BR2_SYSTEM_DHCP="eth0"`.
-2. SD card re-flashed with this image. `/etc/network/interfaces` now has `auto eth0` / `iface eth0 inet dhcp`.
-3. GPIO: `gpiodetect` shows `gpiochip0 [zynq_gpio] (118 lines)` (lines 0-53 = MIO, 54-117 = EMIO). LED D3 and button PB1 both work (commands below).
-4. SSH: works with `ssh root@<ip>` (got `10.0.0.14` once; the IP can change because the MAC is random each boot). `uname -m` on the board shows `armv7l`.
-5. **Known board issue:** the Ethernet PHY is often not detected at power-up (details and workaround below).
+1. `~/br-microzed/.config` has: `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), a root password, `BR2_SYSTEM_DHCP="eth0"`, `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`, and the BusyBox fragment `/home/fabio/mz-busybox.fragment`.
+2. GPIO: `gpiodetect` shows `gpiochip0 [zynq_gpio] (118 lines)` (lines 0-53 = MIO, 54-117 = EMIO). LED D3 and button PB1 both work.
+3. Network: fixed MAC `02:0a:35:00:00:01`, so the board gets **10.0.0.134**. SSH with `ssh root@10.0.0.134`.
+4. Web page: `http://10.0.0.134` (redirects to `/cgi-bin/status`): die temperature, all XADC voltage rails, uptime, load, memory, IP, kernel. Refreshes every 5 s.
+5. Config backup: `~/mz-overlay-microzed.config` (copy of `.config`).
+
+### Rootfs overlay (`~/mz-overlay`)
+
+Copied into the image at the end of every `make` (no package rebuild needed, but `make` must run before flashing).
+
+| File in overlay | Purpose |
+|---|---|
+| `etc/network/interfaces` | lo + eth0 DHCP, with `pre-up ip link set eth0 address 02:0a:35:00:00:01` (fixed MAC) |
+| `etc/dropbear/*` | SSH host keys copied from the board, so the key stays the same after re-flashing. Private: never commit |
+| `usr/bin/hello`, `usr/bin/blink` | cross-compiled test programs |
+| `srv/www/cgi-bin/status` | status page CGI script (shell + awk) |
+| `srv/www/cgi-bin/index.cgi` | redirects `/` to `/cgi-bin/status` (see BusyBox bug below) |
+| `etc/init.d/S90httpd` | starts `httpd -h /srv/www -p 80` at boot |
+
+The MAC is set from Linux rather than U-Boot because the U-Boot environment lives on the SD boot partition and is erased by every `dd`. Both boards use this card, so they have the same MAC and IP: never put both on the network at once (change the last MAC byte on one of them if needed).
+
+### Cross-compiling
+
+- Compiler: `~/br-microzed/host/bin/arm-linux-gcc` (short name Buildroot provides; the long name is `arm-buildroot-linux-gnueabihf-gcc`).
+- Programs live in `~/mz-apps` (`hello.c`, `blink.c`).
+- Build: `arm-linux-gcc -Wall -O2 -o blink blink.c -lgpiod`. Buildroot's compiler finds the headers and libraries in its sysroot automatically.
+- Check with `file blink` (should say `ELF 32-bit LSB executable, ARM`), copy with `scp -O`.
+- `blink.c` uses the libgpiod v1 C API: `gpiod_chip_open_by_name`, `gpiod_chip_get_line`, `gpiod_line_request_output/input`, `gpiod_line_set_value/get_value`. It blinks LED D3 until PB1 is pressed.
+
+### XADC (temperature and voltages)
+
+- The kernel's XADC driver shows up as `/sys/bus/iio/devices/iio:device0` (`name` = `xadc`).
+- Temperature in degrees C = `(in_temp0_raw + in_temp0_offset) * in_temp0_scale / 1000`.
+- Voltages in V = `raw * scale / 1000`. Channels: vccint (1.0 V, PL core), vccaux (1.8 V), vccbram (1.0 V), vccpint (1.0 V, PS core), vccpaux (1.8 V), vccoddr (1.5 V, DDR3), vrefp (1.25 V), vrefn (0 V).
+
+### BusyBox httpd
+
+- Not in the default Buildroot BusyBox. Enabled with a config fragment `~/mz-busybox.fragment` (`CONFIG_HTTPD=y`, `CONFIG_FEATURE_HTTPD_CGI=y`), set in menuconfig under Target packages -> BusyBox -> "Additional BusyBox configuration fragment files". Applied with `make busybox-dirclean && make`.
+- **BusyBox bug:** with CGI on but `FEATURE_HTTPD_BASIC_AUTH` off, a request for `/` returns 404 even though `index.html` exists (`/index.html` works). httpd appends `index.html`, truncates it for the auth check, and only restores it when basic auth is compiled in. Found by reading the BusyBox source (master branch).
+- Workaround used: no `index.html`; `cgi-bin/index.cgi` sends a 302 redirect to `/cgi-bin/status` (httpd only falls back to `index.cgi` when `index.html` does not exist).
+- Alternative fix: add `CONFIG_FEATURE_HTTPD_BASIC_AUTH=y` to the fragment, then `make busybox-dirclean && make`.
+- `curl` is not on the board; use `wget -O - http://127.0.0.1/...` there.
 
 ### Why libgpiod2 was dropped (solved)
 
@@ -119,16 +160,30 @@ What was tested:
 - The factory QSPI image (JP2 1-2) once showed `xemacps ... link up (1000/FULL)`. Its fixed IP is `192.168.1.10`; `udhcpc` got no reply and RX packets stayed 0 (probably the old software's RGMII timing, not tested further).
 - The RJ45 link LEDs stay on even when the PHY is "missing". The PHY makes the cable link by itself; only its MDIO management interface stops answering.
 
-**Workaround that works:** power up **without the Ethernet cable plugged in**. Plug the cable in after boot, then press SW2 (reset) if needed. SSH then works.
+**Workaround that sometimes works:** power up **without the Ethernet cable plugged in**, then plug it in after boot. This helped at first, but later it also failed often.
 
-Likely cause (not confirmed): the 88E1512 reads its address and mode from strap pins at power-up, and some are shared with the RJ45 LED lines. With a live link partner connected at power-up, the straps may be read wrong. To confirm: check the PHY strap/CONFIG and reset wiring in the Avnet user guide or schematic, and test the factory image's cold-boot success rate.
+From the Avnet user guide (section 2.7 and 2.10.3): the PHY reset `ETH_RST_N` is **not** on an MIO pin. It is driven by PG_MODULE (the 3.3 V power-good signal, which is the board's power-on reset) through level translator U8. So:
+- Software cannot reset the PHY, and a `reset-gpios` device tree fix is not possible.
+- SW2 (PS_SRST#) does not reset the PHY either. Earlier "SW2 fixed it" results were probably luck.
+- Only a full power cycle resets the PHY. If it comes out of the power-on reset in a bad state, it stays that way.
+
+Conclusion so far: a board-level power-up problem on board 1 (reset timing vs. the 25 MHz oscillator, the U8 translator, or a weak PHY). Not yet done: count the factory image's cold-boot success rate, and run 5 cold boots with the cable plugged in on board 2. If board 2 is always fine, board 1 is faulty (contact Avnet: "88E1512 not responding on MDIO after power-on, intermittent"). Fallback option: a USB-Ethernet adapter (ASIX AX88179 / AX88772) on the USB host port.
+
+### Second board and SD card corruption
+
+- The same SD card boots on a second MicroZed (same PS for 7010/7020; set the boot jumpers to SD first).
+- On the first try it panicked: `EXT4-fs (mmcblk0p2): group descriptors corrupted!` / `VFS: Unable to mount root fs on unknown-block(179,2)` (179,2 = mmcblk0p2, the rootfs).
+- Cause: power was cut while the board was writing to the card (easy to do with all the PHY power-cycling). Fixed by re-flashing (or `sudo fsck.ext4 -fy /dev/sdb2`).
+- **Always run `poweroff` and wait for `reboot: System halted` before unplugging.**
 
 ## Next steps
 
-1. Set a fixed MAC in U-Boot so the IP stays the same: stop at the U-Boot countdown, then `setenv ethaddr 02:0a:35:00:00:01` and `saveenv`. Optionally reserve the IP in the router.
-2. Cross-compile `hello.c` with `~/br-microzed/host/bin/arm-buildroot-linux-gnueabihf-gcc` (check the exact name), then `scp -O` it to the board (N9). Dropbear has no sftp server, hence `-O`.
-3. Set up a rootfs overlay (`BR2_ROOTFS_OVERLAY`) for custom files and scripts, so they survive re-flashing.
-4. Later: look into the PHY strap/reset wiring for a proper fix.
+1. PHY test on board 2: 5 cold boots with the Ethernet cable plugged in; tally good/bad.
+2. Run `make` before the next flash so the overlay changes (`index.cgi`, no `index.html`) are in the image.
+3. Kernel "hello" module: build against the Buildroot kernel, `insmod`, read `dmesg`.
+4. Device tree exercise: add a `gpio-leds` node for LED D3, then `echo heartbeat > /sys/class/leds/<name>/trigger`.
+5. Character driver `/dev/myled`; event-driven button with libgpiod events.
+6. Optional: temperature logging to CSV with cron; LED on/off buttons on the web page.
 
 ## Longer roadmap
 
@@ -157,3 +212,8 @@ Note: most PL (FPGA) pins only reach the MicroHeaders on the underside, so PL I/
 - Re-flashing creates a new Dropbear host key. Clear the old one on the PC with `ssh-keygen -R <ip>`.
 - Find the board on the network without serial: `nmap -p 22 --open 10.0.0.0/24`.
 - Power up the MicroZed without the Ethernet cable, then plug it in (see the PHY issue above).
+- The overlay is copied during `make`. A file added to `~/mz-overlay` after the last `make` is not in `sdcard.img` until you run `make` again.
+- BusyBox options are changed with a config fragment, then `make busybox-dirclean && make` (a plain `make` does not reconfigure an already-built BusyBox).
+- Long `cat << EOF` pastes through KDE Connect can get cut off. For long files, paste into `nano` (Ctrl+Shift+V, save Ctrl+O, exit Ctrl+X) and check with `sh -n` and `tail`.
+- Run `poweroff` before unplugging, or the ext4 rootfs can get corrupted.
+- End an SSH session with `exit` or Ctrl-D; force-close a frozen one with Enter, `~`, `.`.
