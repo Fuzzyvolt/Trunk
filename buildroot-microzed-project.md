@@ -1,6 +1,6 @@
 # Buildroot + QEMU + MicroZed: project summary
 
-Last updated: 2026-11-14 (evening)
+Last updated: 2026-11-14 (night)
 
 Load this file at the start of a new session to continue the project.
 
@@ -81,13 +81,42 @@ Harmless boot messages:
 
 ## Current state (where we stopped)
 
-As of 2026-11-14 (evening): **GPIO, SSH, cross-compiled C programs, rootfs overlay and a status web page all work.** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below).
+As of 2026-11-14 (night): **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and an LED daemon all work.** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Next: the kernel "hello" module (files ready in `microzed/modules/hello/`).
 
-1. `~/br-microzed/.config` has: `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), a root password, `BR2_SYSTEM_DHCP="eth0"`, `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`, and the BusyBox fragment `/home/fabio/mz-busybox.fragment`.
-2. GPIO: `gpiodetect` shows `gpiochip0 [zynq_gpio] (118 lines)` (lines 0-53 = MIO, 54-117 = EMIO). LED D3 and button PB1 both work.
-3. Network: fixed MAC `02:0a:35:00:00:01`, so the board gets **10.0.0.134**. SSH with `ssh root@10.0.0.134`.
-4. Web page: `http://10.0.0.134` (redirects to `/cgi-bin/status`): die temperature, all XADC voltage rails, uptime, load, memory, IP, kernel. Refreshes every 5 s.
+1. `~/br-microzed/.config` has: `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), **ethtool**, a root password, `BR2_SYSTEM_DHCP="eth0"`, `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`, and the BusyBox fragment `/home/fabio/mz-busybox.fragment`.
+2. GPIO: `gpiodetect` shows `gpiochip0 [zynq_gpio] (118 lines)` (lines 0-53 = MIO, 54-117 = EMIO). LED D3 and button PB1 are owned by `leddaemon`.
+3. Network: fixed MAC `02:0a:35:00:00:01`, so the board gets **10.0.0.134**. `ssh root@10.0.0.134` logs in with a key (no password).
+4. Web page: `http://10.0.0.134` (redirects to `/cgi-bin/status`): die temperature, all XADC voltage rails, uptime, load, memory, IP, kernel, LED state, and buttons (LED on/off/toggle, power off). Refreshes every 5 s.
 5. Config backup: `~/mz-overlay-microzed.config` (copy of `.config`).
+
+### Repo workflow (`~/trunk/microzed`)
+
+All source files now live in the git repo, in `microzed/` (see `microzed/README.md`). Claude writes files there; the laptop gets them with git.
+
+- Laptop clone: `~/trunk`, branch `claude/micro-zed-project-ideas-o0fk5t` (private repo: git asks for the GitHub username and a personal access token). Update with `cd ~/trunk && git pull`.
+- `cd ~/trunk/microzed`, then:
+  - `make`: cross-compile the programs into `build/`.
+  - `make push`: stop leddaemon, copy programs and scripts to the running board over SSH, start leddaemon again. No re-flash needed for programs and scripts.
+  - `make overlay`: copy programs and overlay files into `~/mz-overlay`.
+  - `make flash`: `make overlay`, rebuild Buildroot, then `flash-sd.sh` (checks the card is removable and not the PC's disk, asks for `yes`, unmounts, `dd`, sync, eject). `make flash SD=/dev/sdc` for another device.
+- Use `make push` for program/script changes, `make flash` for Buildroot changes (packages, kernel, BusyBox) or to make changes permanent.
+- Kernel modules: `microzed/modules/<name>/`, built with their own Makefile (`make`, `make push`).
+
+### SSH key login
+
+- Key made on the laptop with `ssh-keygen -t ed25519`, copied with `ssh-copy-id root@10.0.0.134` (run on the laptop, not on the board).
+- To keep it after re-flashing, it is in the overlay: `~/mz-overlay/root/.ssh/authorized_keys` (folder 700, file 600; Dropbear ignores the key if permissions are looser).
+- `~/.ssh/id_ed25519` (no `.pub`) is the private key: keep it on the laptop only.
+
+### LED daemon (`microzed/apps/leddaemon.c`)
+
+- Started at boot by `/etc/init.d/S99leddaemon` (BusyBox `start-stop-daemon`, pid file `/var/run/leddaemon.pid`).
+- Owns LED D3 (output) and PB1 (both-edge events, so it sleeps until the button interrupt fires). Debounce: after an edge, wait until the line is quiet for 30 ms, then read the settled value; a 0 -> 1 change toggles the LED.
+- Commands through a FIFO: `echo on|off|toggle > /tmp/led.fifo`. The FIFO is opened read-write, so it never reports end-of-file when a writer closes it.
+- Writes the state to `/tmp/led.state` (temp file + rename, so readers never see half a file). Logs to syslog: `logread | grep leddaemon`. Foreground debug: stop the service, run `leddaemon -f`.
+- The web page's `control` CGI only accepts POST with exact values (`led_on`, `led_off`, `led_toggle`, `poweroff`), sends commands to the FIFO only if the daemon is running (a FIFO with no reader would block forever), and redirects back with `303 See Other`. Power off asks for confirmation in the browser.
+- While the daemon runs, `blink` and `gpioset` on lines 47/51 fail with "Device or resource busy" (only one program can own a line). Stop the daemon first.
+- Daemon vs CGI: an S99 daemon is started once by init and runs until shutdown (keeps state, reacts to hardware); a CGI script is started by httpd for each request and exits after printing the page. Real devices combine them: the daemon owns the hardware, the CGI talks to it.
 
 ### Rootfs overlay (`~/mz-overlay`)
 
@@ -169,6 +198,14 @@ From the Avnet user guide (section 2.7 and 2.10.3): the PHY reset `ETH_RST_N` is
 
 Conclusion so far: a board-level power-up problem on board 1 (reset timing vs. the 25 MHz oscillator, the U8 translator, or a weak PHY). Not yet done: count the factory image's cold-boot success rate, and run 5 cold boots with the cable plugged in on board 2. If board 2 is always fine, board 1 is faulty (contact Avnet: "88E1512 not responding on MDIO after power-on, intermittent"). Fallback option: a USB-Ethernet adapter (ASIX AX88179 / AX88772) on the USB host port.
 
+### Wi-Fi disruption while the board is on the network (open, watching)
+
+- Symptom: while the board is connected to the Vidéotron router, a video call on another computer (on Wi-Fi) stops. Not an IP conflict (the other computer has a different IP), and only one `Link is Up` in `dmesg` (no link flapping).
+- Suspect: Ethernet **pause frames**. `ethtool eth0` shows the board advertises `Transmit-only` pause and the router `Symmetric Receive-only`, so the board may send pause frames and the router obeys them (boot log: `flow control tx`). On home routers this can stall the shared switch, including Wi-Fi traffic.
+- `ethtool -a eth0` gives "Operation not supported" (the macb driver has no pause settings), so pause is turned off through the PHY advertisement instead: `ethtool -s eth0 advertise 0x02f` (10/100 half+full and 1000 full, no Pause/Asym_Pause bits). Then `dmesg | tail` should show `flow control off`.
+- Not applied yet: `ethtool -S eth0 | grep -i pause` showed no pause frames so far. Next time the problem happens, check whether `tx_pause_frames` climbs; if so, apply the advertise fix and make it permanent with a `post-up` line in `overlay/etc/network/interfaces`.
+- Other test: stop the board at the U-Boot prompt during a call. If the call still drops, the PHY itself causes it (hardware).
+
 ### Second board and SD card corruption
 
 - The same SD card boots on a second MicroZed (same PS for 7010/7020; set the boot jumpers to SD first).
@@ -178,12 +215,12 @@ Conclusion so far: a board-level power-up problem on board 1 (reset timing vs. t
 
 ## Next steps
 
-1. PHY test on board 2: 5 cold boots with the Ethernet cable plugged in; tally good/bad.
-2. Run `make` before the next flash so the overlay changes (`index.cgi`, no `index.html`) are in the image.
-3. Kernel "hello" module: build against the Buildroot kernel, `insmod`, read `dmesg`.
-4. Device tree exercise: add a `gpio-leds` node for LED D3, then `echo heartbeat > /sys/class/leds/<name>/trigger`.
-5. Character driver `/dev/myled`; event-driven button with libgpiod events.
-6. Optional: temperature logging to CSV with cron; LED on/off buttons on the web page.
+1. **Kernel "hello" module** (files ready): `cd ~/trunk/microzed/modules/hello && make push`, then on the board `insmod /root/hello.ko`, `dmesg | tail`, `rmmod hello`.
+2. Device tree exercise: add a `gpio-leds` node for LED D3, then `echo heartbeat > /sys/class/leds/<name>/trigger`.
+3. Character driver `/dev/myled`, which the web page could use.
+4. Watch the pause counters during the next Wi-Fi disruption.
+5. PHY test on board 2: 5 cold boots with the Ethernet cable plugged in; tally good/bad.
+6. Optional: temperature logging to CSV with cron; basic auth for the web page.
 
 ## Longer roadmap
 
@@ -217,3 +254,6 @@ Note: most PL (FPGA) pins only reach the MicroHeaders on the underside, so PL I/
 - Long `cat << EOF` pastes through KDE Connect can get cut off. For long files, paste into `nano` (Ctrl+Shift+V, save Ctrl+O, exit Ctrl+X) and check with `sh -n` and `tail`.
 - Run `poweroff` before unplugging, or the ext4 rootfs can get corrupted.
 - End an SSH session with `exit` or Ctrl-D; force-close a frozen one with Enter, `~`, `.`.
+- Board shell errors look like `-sh: <cmd>: not found`. If a laptop command (`ssh-copy-id`, `curl`, `make`) gives that, you are in the board's SSH session: `exit` first. Prompt `#` = board, `fabio@fabio-UX430UAR:~$` = laptop.
+- A background command in a CGI script must redirect its input and output (`</dev/null >/dev/null 2>&1 &`), or httpd waits for it and the page hangs.
+- Copying over a running program fails with "Text file busy": stop it first (`make push` does this for leddaemon).

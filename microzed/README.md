@@ -9,6 +9,7 @@ Source for the programs and the Buildroot rootfs overlay used in `buildroot-micr
 | `apps/hello.c` | Cross-compile test |
 | `apps/blink.c` | Blinks LED D3 until PB1 is pressed (libgpiod v1) |
 | `apps/leddaemon.c` | Daemon that owns LED D3 and PB1; takes commands from `/tmp/led.fifo` |
+| `modules/hello/` | First kernel module (own Makefile, builds against the Buildroot kernel) |
 | `overlay/` | Files copied into the board's root filesystem (mirrors `/`) |
 | `overlay/etc/init.d/S90httpd` | Starts BusyBox httpd at boot |
 | `overlay/etc/init.d/S99leddaemon` | Starts leddaemon at boot |
@@ -61,3 +62,23 @@ make flash
 ```
 
 This copies the overlay, rebuilds the Buildroot image, then runs `flash-sd.sh`: it checks that `/dev/sdb` is a removable card (never the PC's own disk), shows it, asks you to type `yes`, unmounts, writes with `dd`, syncs and ejects. Use `make flash SD=/dev/sdc` if the card has another name, or `./flash-sd.sh` to flash the existing image without rebuilding.
+
+## Kernel modules
+
+Each module has its own folder and Makefile, which builds against the kernel tree Buildroot built (`~/br-microzed/build/linux-*`).
+
+```bash
+cd ~/trunk/microzed/modules/hello
+make            # builds hello.ko
+make push       # copies it to the board's /root/
+```
+
+On the board:
+
+```bash
+insmod /root/hello.ko
+dmesg | tail -3
+rmmod hello
+```
+
+A module only loads into the exact kernel it was built against. After a kernel change in Buildroot, rebuild the module.
