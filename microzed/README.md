@@ -10,6 +10,8 @@ Source for the programs and the Buildroot rootfs overlay used in `buildroot-micr
 | `apps/blink.c` | Blinks LED D3 until PB1 is pressed (libgpiod v1) |
 | `apps/leddaemon.c` | Daemon that owns LED D3 and PB1; takes commands from `/tmp/led.fifo` |
 | `modules/hello/` | First kernel module (own Makefile, builds against the Buildroot kernel) |
+| `modules/myled-dt/` | Same `/dev/myled`, as a platform driver bound to a device tree node (`compatible = "microzed,myled"`) |
+| `board/post-image-dt.sh` | Buildroot post-image script: adds the `myled` node to the `.dtb` before the SD image is made |
 | `modules/myled/` | Character driver: `/dev/myled` controls LED D3 (`echo 1`, `echo 0`, `echo t`, `cat`) |
 | `overlay/` | Files copied into the board's root filesystem (mirrors `/`) |
 | `overlay/etc/init.d/S90httpd` | Starts BusyBox httpd at boot |
@@ -99,4 +101,24 @@ echo 1 > /dev/myled
 cat /dev/myled
 rmmod myled
 /etc/init.d/S99leddaemon start
+```
+
+### myled-dt (device tree + platform driver)
+
+One-time setup on the laptop:
+
+```bash
+sudo apt install device-tree-compiler
+cd ~/br-microzed && make menuconfig
+```
+
+System configuration -> "Custom scripts to run after creating filesystem images": put
+`/home/fabio/trunk/microzed/board/post-image-dt.sh` in front of what is already there (keep the genimage script after it). Then `make flash`.
+
+On the board: check the node with `ls /proc/device-tree/myled`, then load the driver (stop leddaemon and `rmmod myled` first):
+
+```bash
+insmod /root/myled_dt.ko
+ls /sys/bus/platform/drivers/myled/
+echo 1 > /dev/myled
 ```
