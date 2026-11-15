@@ -22,7 +22,7 @@ git clone https://github.com/Avnet/bdf.git ~/vivado-boards/avnet-bdf
 ```
 
 ```bash
-mkdir -p ~/.Xilinx/Vivado && echo 'set_param board.repoPaths [list ~/vivado-boards/avnet-bdf]' >> ~/.Xilinx/Vivado/Vivado_init.tcl
+mkdir -p ~/.Xilinx/Vivado && echo 'set_param board.repoPaths [list /home/fabio/vivado-boards/avnet-bdf]' > ~/.Xilinx/Vivado/Vivado_init.tcl
 ```
 
 ## Build project 01 from the command line
