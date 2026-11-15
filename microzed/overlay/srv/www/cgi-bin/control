@@ -1,0 +1,33 @@
+#!/bin/sh
+# Handles button presses from the status page (POST only).
+# LED commands go straight to the myled_irq kernel driver through /dev/myled.
+# Only exact values are accepted: nothing from the request reaches the shell.
+DEV=/dev/myled
+
+redirect() {
+  echo "Status: 303 See Other"
+  echo "Location: /cgi-bin/status"
+  echo ""
+  exit 0
+}
+
+# Write only if the driver is loaded (-c: the character device exists).
+send() {
+  [ -c $DEV ] && echo "$1" > $DEV
+}
+
+[ "$REQUEST_METHOD" = "POST" ] || redirect
+BODY=$(head -c "${CONTENT_LENGTH:-0}")
+
+case "$BODY" in
+  action=led_on)     send 1; redirect ;;
+  action=led_off)    send 0; redirect ;;
+  action=led_toggle) send t; redirect ;;
+  action=poweroff)
+    echo "Content-Type: text/html"
+    echo ""
+    echo "<h2>Powering off...</h2><p>Unplug the board after the console shows 'System halted' (about 10 s).</p>"
+    (sleep 2; poweroff) </dev/null >/dev/null 2>&1 &
+    exit 0 ;;
+  *) redirect ;;
+esac

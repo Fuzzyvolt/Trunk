@@ -1,6 +1,6 @@
 # Buildroot + QEMU + MicroZed: project summary
 
-Last updated: 2026-11-14
+Last updated: 2026-11-15 (evening)
 
 Load this file at the start of a new session to continue the project.
 
@@ -32,6 +32,10 @@ The learner has little hands-on embedded Linux experience. Explain from the basi
 | Boot: QSPI (factory) | JP3 2-3, JP2 1-2, JP1 1-2 |
 | Boot: SD card (current) | JP3 2-3, **JP2 2-3**, JP1 1-2 |
 | Reset button SW2 | Does **not** re-read the boot jumpers; power-cycle after changing them |
+| Ethernet PHY | Marvell 88E1512, RGMII on MIO 16-27, MDC = MIO52, MDIO = MIO53 (1.8 V bank 501), own 25 MHz oscillator |
+| PHY reset (ETH_RST_N, PHY pin 16) | **No MIO pin.** Driven by PG_MODULE (3.3 V power-good = board power-on reset) through level translator U8. Software cannot reset the PHY |
+| SW2 (PS_SRST#) | Resets the processor and PL only, **not** the PHY |
+| USB PHY reset | MIO7 (AND-ed with PG_MODULE) |
 
 The factory QSPI image (U-Boot 2013.01 and an old Linux) is still in flash, untouched.
 
@@ -77,24 +81,193 @@ Harmless boot messages:
 
 ## Current state (where we stopped)
 
-1. Added to `~/br-microzed/.config`: `dropbear`, `libgpiod2` + "install tools", a root password, DHCP on `eth0`. These were first set in the QEMU folder by mistake, then copied over.
-2. Rebuilt and re-flashed the SD card. The board boots, asks for the root password, and `dropbear` is present (`/usr/sbin/dropbear`).
-3. **Open problem:** `gpiodetect` is not found on the board, so the libgpiod2 tools did not make it into the image.
-   - Suspected cause: the libgpiod2 option was silently dropped by `make olddefconfig` or a menuconfig dependency (libgpiod2 needs kernel headers >= 5.10), or "install tools" is off.
-   - Next checks on the PC:
-     ```bash
-     grep -E "LIBGPIOD|HEADERS_AT_LEAST_5_10=|BR2_LINUX_KERNEL_VERSION|KERNEL_HEADERS" ~/br-microzed/.config
-     ls ~/br-microzed/target/usr/bin/ | grep gpio
-     ```
-     If the option is missing: in `make menuconfig`, press `/`, search `LIBGPIOD2`, and read its "Depends on" line.
-   - Workaround meanwhile: sysfs GPIO, if `/sys/class/gpio` exists on the board (pin number = gpiochip base + MIO number).
-4. Ethernet is not connected yet. SSH has not been tried.
+As of 2026-11-15: **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and our own kernel driver (`myled_irq`, loaded at boot) all work.** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver), `myled-dt` (device tree platform driver) and `myled-irq` (button interrupt, blocking `/dev/mybutton`) also work.
+
+1. `~/br-microzed/.config` has: `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), **ethtool**, a root password, `BR2_SYSTEM_DHCP="eth0"`, `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`, and the BusyBox fragment `/home/fabio/mz-busybox.fragment`.
+2. GPIO: `gpiodetect` shows `gpiochip0 [zynq_gpio] (118 lines)` (lines 0-53 = MIO, 54-117 = EMIO). LED D3 and button PB1 are owned by the `myled_irq` kernel driver (`/dev/myled`, `/dev/mybutton`), loaded at boot by `/etc/init.d/S30myled`.
+3. Network: fixed MAC `02:0a:35:00:00:01`, so the board gets **10.0.0.134**. `ssh root@10.0.0.134` logs in with a key (no password).
+4. Web page: `http://10.0.0.134` (redirects to `/cgi-bin/status`): die temperature, all XADC voltage rails, uptime, load, memory, IP, kernel, LED state, and buttons (LED on/off/toggle, power off). Refreshes every 5 s.
+5. Config backup: `~/mz-overlay-microzed.config` (copy of `.config`).
+
+### Repo workflow (`~/trunk/microzed`)
+
+All source files now live in the git repo, in `microzed/` (see `microzed/README.md`). Claude writes files there; the laptop gets them with git.
+
+- Laptop clone: `~/trunk` (private repo: git asks for the GitHub username and a personal access token). Update with `cd ~/trunk && git pull`.
+- Branches: the work was done on `claude/micro-zed-project-ideas-o0fk5t` and merged into the repo's default branch, `claude/github-setup-i4kllz`, so new sessions see it. After the merge, switch the laptop clone with `git checkout claude/github-setup-i4kllz && git pull`. New sessions work on their own branch; merge each one back into the default branch when done.
+- `cd ~/trunk/microzed`, then:
+  - `make`: cross-compile the programs into `build/`.
+  - `make`: also builds the `myled_irq` kernel module.
+  - `make push`: unload the driver (and remove leddaemon if still there), copy the module, programs and scripts to the running board over SSH, load the driver again. No re-flash needed.
+  - `make overlay`: copy programs and overlay files into `~/mz-overlay`.
+  - `make flash`: `make overlay`, rebuild Buildroot, then `flash-sd.sh` (checks the card is removable and not the PC's disk, asks for `yes`, unmounts, `dd`, sync, eject). `make flash SD=/dev/sdc` for another device.
+- Use `make push` for program/script changes, `make flash` for Buildroot changes (packages, kernel, BusyBox) or to make changes permanent.
+- Kernel modules: `microzed/modules/<name>/`, built with their own Makefile (`make`, `make push`).
+
+### SSH key login
+
+- Key made on the laptop with `ssh-keygen -t ed25519`, copied with `ssh-copy-id root@10.0.0.134` (run on the laptop, not on the board).
+- To keep it after re-flashing, it is in the overlay: `~/mz-overlay/root/.ssh/authorized_keys` (folder 700, file 600; Dropbear ignores the key if permissions are looser).
+- `~/.ssh/id_ed25519` (no `.pub`) is the private key: keep it on the laptop only.
+
+### LED daemon (`microzed/apps/leddaemon.c`, retired)
+
+Replaced by the `myled_irq` kernel driver on 2026-11-15. Its init script is kept as `microzed/apps/leddaemon.init`. What it did:
+
+- Was started at boot by `/etc/init.d/S99leddaemon` (BusyBox `start-stop-daemon`, pid file `/var/run/leddaemon.pid`).
+- Owns LED D3 (output) and PB1 (both-edge events, so it sleeps until the button interrupt fires). Debounce: after an edge, wait until the line is quiet for 30 ms, then read the settled value; a 0 -> 1 change toggles the LED.
+- Commands through a FIFO: `echo on|off|toggle > /tmp/led.fifo`. The FIFO is opened read-write, so it never reports end-of-file when a writer closes it.
+- Writes the state to `/tmp/led.state` (temp file + rename, so readers never see half a file). Logs to syslog: `logread | grep leddaemon`. Foreground debug: stop the service, run `leddaemon -f`.
+- The web page's `control` CGI only accepts POST with exact values (`led_on`, `led_off`, `led_toggle`, `poweroff`) and redirects back with `303 See Other`. Power off asks for confirmation in the browser. It used to send commands to the daemon's FIFO (only if the daemon was running: a FIFO with no reader blocks forever); it now writes `1`/`0`/`t` to `/dev/myled`.
+- While the daemon runs, `blink` and `gpioset` on lines 47/51 fail with "Device or resource busy" (only one program can own a line). Stop the daemon first.
+- Daemon vs CGI: an S99 daemon is started once by init and runs until shutdown (keeps state, reacts to hardware); a CGI script is started by httpd for each request and exits after printing the page. Real devices combine them: the daemon owns the hardware, the CGI talks to it.
+
+### Rootfs overlay (`~/mz-overlay`)
+
+Copied into the image at the end of every `make` (no package rebuild needed, but `make` must run before flashing).
+
+| File in overlay | Purpose |
+|---|---|
+| `etc/network/interfaces` | lo + eth0 DHCP, with `pre-up ip link set eth0 address 02:0a:35:00:00:01` (fixed MAC) |
+| `etc/dropbear/*` | SSH host keys copied from the board, so the key stays the same after re-flashing. Private: never commit |
+| `usr/bin/hello`, `usr/bin/blink` | cross-compiled test programs |
+| `srv/www/cgi-bin/status` | status page CGI script (shell + awk) |
+| `srv/www/cgi-bin/index.cgi` | redirects `/` to `/cgi-bin/status` (see BusyBox bug below) |
+| `etc/init.d/S90httpd` | starts `httpd -h /srv/www -p 80` at boot |
+
+The MAC is set from Linux rather than U-Boot because the U-Boot environment lives on the SD boot partition and is erased by every `dd`. Both boards use this card, so they have the same MAC and IP: never put both on the network at once (change the last MAC byte on one of them if needed).
+
+### Cross-compiling
+
+- Compiler: `~/br-microzed/host/bin/arm-linux-gcc` (short name Buildroot provides; the long name is `arm-buildroot-linux-gnueabihf-gcc`).
+- Programs live in `~/mz-apps` (`hello.c`, `blink.c`).
+- Build: `arm-linux-gcc -Wall -O2 -o blink blink.c -lgpiod`. Buildroot's compiler finds the headers and libraries in its sysroot automatically.
+- Check with `file blink` (should say `ELF 32-bit LSB executable, ARM`), copy with `scp -O`.
+- `blink.c` uses the libgpiod v1 C API: `gpiod_chip_open_by_name`, `gpiod_chip_get_line`, `gpiod_line_request_output/input`, `gpiod_line_set_value/get_value`. It blinks LED D3 until PB1 is pressed.
+
+### XADC (temperature and voltages)
+
+- The kernel's XADC driver shows up as `/sys/bus/iio/devices/iio:device0` (`name` = `xadc`).
+- Temperature in degrees C = `(in_temp0_raw + in_temp0_offset) * in_temp0_scale / 1000`.
+- Voltages in V = `raw * scale / 1000`. Channels: vccint (1.0 V, PL core), vccaux (1.8 V), vccbram (1.0 V), vccpint (1.0 V, PS core), vccpaux (1.8 V), vccoddr (1.5 V, DDR3), vrefp (1.25 V), vrefn (0 V).
+
+### BusyBox httpd
+
+- Not in the default Buildroot BusyBox. Enabled with a config fragment `~/mz-busybox.fragment` (`CONFIG_HTTPD=y`, `CONFIG_FEATURE_HTTPD_CGI=y`), set in menuconfig under Target packages -> BusyBox -> "Additional BusyBox configuration fragment files". Applied with `make busybox-dirclean && make`.
+- **BusyBox bug:** with CGI on but `FEATURE_HTTPD_BASIC_AUTH` off, a request for `/` returns 404 even though `index.html` exists (`/index.html` works). httpd appends `index.html`, truncates it for the auth check, and only restores it when basic auth is compiled in. Found by reading the BusyBox source (master branch).
+- Workaround used: no `index.html`; `cgi-bin/index.cgi` sends a 302 redirect to `/cgi-bin/status` (httpd only falls back to `index.cgi` when `index.html` does not exist).
+- Alternative fix: add `CONFIG_FEATURE_HTTPD_BASIC_AUTH=y` to the fragment, then `make busybox-dirclean && make`.
+- `curl` is not on the board; use `wget -O - http://127.0.0.1/...` there.
+
+### Why libgpiod2 was dropped (solved)
+
+- `BR2_PACKAGE_LIBGPIOD2` was missing from `.config`, and `BR2_TOOLCHAIN_HEADERS_AT_LEAST_5_10` was not set. libgpiod2 needs kernel headers >= 5.10, so menuconfig hides it and silently drops it.
+- Fix: use **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD` + "install tools"). It works with older headers. Moving to libgpiod2 later would need newer toolchain headers and a full `make clean && make`.
+- v1 tools include `gpiofind`, which v2 does not have. The syntax also differs from v2:
+
+```bash
+gpiodetect
+gpioset --mode=wait gpiochip0 47=1   # LED D3 on; press Enter to release
+gpioget gpiochip0 51                 # button PB1: 0 released, 1 pressed
+gpiomon gpiochip0 51                 # watch button events, Ctrl-C to stop
+```
+
+### Why DHCP was missing from the image (solved)
+
+- `BR2_SYSTEM_DHCP="eth0"` was already set in `.config`, but `/etc/network/interfaces` on the board only had `lo`.
+- Cause: the file is generated by the `ifupdown-scripts` package, which had been built before the option was set. A plain `make` does not rebuild a package when an option it uses changes.
+- Fix: `make ifupdown-scripts-rebuild && make`, then re-flash.
+- Manual workaround on a running board: `ip link set eth0 up` then `udhcpc -i eth0`.
+
+### Ethernet PHY not detected at power-up (open, workaround found)
+
+Symptoms on a bad boot:
+- U-Boot: `Net: Could not get PHY for eth0: addr 0` / `No ethernet found.`
+- Linux: `macb e000b000.ethernet eth0: Could not attach PHY (-19)`, `mdio_bus e000b000.ethernet-ffffffff: MDIO device at address 0 is missing.`, and `ls /sys/bus/mdio_bus/devices/` is empty. `ip link set eth0 up` fails with `SIOCSIFFLAGS: No such device`.
+- Good boot: U-Boot shows `ZYNQ GEM: e000b000, mdio bus e000b000, phyaddr 0, interface rgmii-id` and `eth0: ethernet@e000b000`; Linux shows `e000b000.ethernet-ffffffff:00`.
+
+What was tested:
+- Not a power-supply problem: it failed on both laptop USB power and a 5 V wall supply.
+- Once the PHY is missing, it stays missing for that power-on. Repeated `dhcp` in U-Boot keeps failing, and `reboot` from Linux does not bring it back.
+- Pressing SW2 or power-cycling sometimes brings it back. The results were inconsistent: most cold boots failed.
+- The factory QSPI image (JP2 1-2) once showed `xemacps ... link up (1000/FULL)`. Its fixed IP is `192.168.1.10`; `udhcpc` got no reply and RX packets stayed 0 (probably the old software's RGMII timing, not tested further).
+- The RJ45 link LEDs stay on even when the PHY is "missing". The PHY makes the cable link by itself; only its MDIO management interface stops answering.
+
+**Workaround that sometimes works:** power up **without the Ethernet cable plugged in**, then plug it in after boot. This helped at first, but later it also failed often.
+
+From the Avnet user guide (section 2.7 and 2.10.3): the PHY reset `ETH_RST_N` is **not** on an MIO pin. It is driven by PG_MODULE (the 3.3 V power-good signal, which is the board's power-on reset) through level translator U8. So:
+- Software cannot reset the PHY, and a `reset-gpios` device tree fix is not possible.
+- SW2 (PS_SRST#) does not reset the PHY either. Earlier "SW2 fixed it" results were probably luck.
+- Only a full power cycle resets the PHY. If it comes out of the power-on reset in a bad state, it stays that way.
+
+Conclusion so far: a board-level power-up problem on board 1 (reset timing vs. the 25 MHz oscillator, the U8 translator, or a weak PHY). Not yet done: count the factory image's cold-boot success rate, and run 5 cold boots with the cable plugged in on board 2. If board 2 is always fine, board 1 is faulty (contact Avnet: "88E1512 not responding on MDIO after power-on, intermittent"). Fallback option: a USB-Ethernet adapter (ASIX AX88179 / AX88772) on the USB host port.
+
+### Kernel modules (`microzed/modules/`)
+
+Each module has its own folder and Makefile. The Makefile calls the kernel's own build system (Kbuild) on the tree Buildroot built (`~/br-microzed/build/linux-*`) with `ARCH=arm CROSS_COMPILE=~/br-microzed/host/bin/arm-linux-`, so the module matches the running kernel exactly (its `vermagic` must match, or `insmod` gives "invalid module format"). `make push` copies the `.ko` to `/root/` on the board.
+
+**hello** (works): `module_init`/`module_exit`, `pr_info` with a `pr_fmt` prefix, a module parameter (`insmod hello.ko who=world`, readable in `/sys/module/hello/parameters/who`), `jiffies`/`HZ` timing. `modinfo hello.ko` shows the license, description, parameter and vermagic. Changing init to `return -ENODEV;` makes the load fail, which is how a driver refuses missing hardware (like macb's "Could not attach PHY (-19)", -19 = -ENODEV).
+
+**myled** character driver (works): `/dev/myled` controls LED D3.
+- `echo 1|0|t > /dev/myled` sets on/off/toggle, `cat /dev/myled` prints the state, anything else gives "Invalid argument" (`-EINVAL`).
+- Init order: `alloc_chrdev_region` (major:minor, listed in `/proc/devices`) -> `class_create` (`/sys/class/myled`) -> `device_create` (devtmpfs creates `/dev/myled`) -> GPIO lookup table + `gpiod_get` -> `cdev_add` last, so nobody can open the device before the GPIO is ready. The error path (`goto err_...`) and the exit function undo the steps in reverse order.
+- User data is copied with `get_user` / `simple_read_from_buffer` (never dereference a user pointer). A mutex protects the LED state.
+- The LED pin was hard-coded with a `gpiod_lookup_table` (chip label `zynq_gpio`, line 47). The next step replaces this with a device tree node.
+- Loading it while leddaemon runs fails with "Device or resource busy" (`-16`, -EBUSY): the kernel allows one owner per GPIO line. Stop leddaemon first, start it again after `rmmod myled`.
+- `class_create()` lost its first argument (`THIS_MODULE`) in kernel 6.4, handled with a `LINUX_VERSION_CODE` check.
+
+**myled-dt** device tree + platform driver (works): same `/dev/myled`, but the hardware comes from a device tree node.
+- `microzed/board/post-image-dt.sh` adds this node to the built `.dtb` with `fdtput` (from `device-tree-compiler`), giving the GPIO controller a `phandle` if it has none:
+  ```
+  myled { compatible = "microzed,myled"; label = "d3"; led-gpios = <&gpio0 47 0>; };
+  ```
+  Editing the compiled `.dtb` avoids depending on the kernel's `.dts` file location and keeps the `.dtb` name the boot setup expects.
+- Buildroot setting: `BR2_ROOTFS_POST_IMAGE_SCRIPT="/home/fabio/trunk/microzed/board/post-image-dt.sh board/zynq/post-image.sh"`. **Order matters**: our script must run before `board/zynq/post-image.sh`, which runs genimage to make `sdcard.img`.
+- Check before flashing: `fdtget ~/br-microzed/images/*.dtb /myled compatible`. On the board: `ls /proc/device-tree/myled/`; the platform device exists even before the driver loads (`/sys/bus/platform/devices/`).
+- The driver only registers itself in init; the kernel calls `probe()` for each node whose `compatible` matches `of_match_table`. `probe()` reads `label` (`device_property_read_string`) and `led-gpios` (`devm_gpiod_get(dev, "led", ...)`), then creates `/dev/myled`. `devm_*` resources are freed automatically on unbind. Binding shows in `/sys/bus/platform/drivers/myled/`.
+- `platform_driver.remove` returns void from kernel 6.11 (int before), handled with `LINUX_VERSION_CODE`.
+
+**myled-irq** button interrupt driver (works): adds PB1 to the same node (`button-gpios = <&gpio0 51 0>`, written by `post-image-dt.sh`, which now updates an existing node instead of skipping it).
+- `/dev/mybutton`: `read()` sleeps until PB1 is pressed, then returns `press N`. Supports `poll()`/`select()` and `O_NONBLOCK` (`-EAGAIN`). Each `open()` gets its own "last press seen" counter, so several readers each get every press. `/dev/myled` works as before. Both use one major number (minor 0 = myled, minor 1 = mybutton).
+- Interrupt: `gpiod_to_irq()` gives the button's IRQ; `devm_request_threaded_irq(..., NULL, thread_fn, IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING | IRQF_ONESHOT, ...)`. The threaded handler (bottom half) may sleep: it waits 20 ms (`msleep`), reads the settled value, and on a 0 -> 1 change toggles the LED, increments an atomic press counter and calls `wake_up_interruptible()`. A plain top-half handler runs in interrupt context and may not sleep. `IRQF_ONESHOT` keeps the line masked until the thread returns.
+- Readers sleep in `wait_event_interruptible()` on a wait queue, using no CPU; Ctrl-C (a signal) ends the wait with `-ERESTARTSYS`.
+- `/proc/interrupts` shows the `myled-button` line: about two interrupts per press (press + release, plus bounce), while the debounced press count rises by one.
+- Test: `cat /dev/mybutton`, or `while read p < /dev/mybutton; do echo "Got $p"; done`.
+- This is the pattern a DMA or ADC driver uses: the hardware interrupts when data is ready, the handler wakes the reader, `read()` returns the data.
+
+**Driver loaded at boot** (works):
+- `make overlay` / `make flash` install the module as `/lib/modules/myled/myled_irq.ko`; `/etc/init.d/S30myled` loads it with `insmod` (start/stop/restart by hand). The boot console shows `Loading myled_irq: OK`; `lsmod` lists it.
+- `insmod` with a full path instead of `modprobe`: `modprobe` needs the index built by `depmod`, and Buildroot runs `depmod` before copying the overlay, so it never sees our module. The proper long-term fix is a Buildroot package (`BR2_EXTERNAL`, kernel-module infrastructure), which also rebuilds the module with the kernel.
+- After a kernel change in Buildroot, rebuild the module (`make`), or it fails to load at boot with "invalid module format".
+- The web page now writes `1`/`0`/`t` to `/dev/myled` and reads the LED state from it (`[ -c /dev/myled ]` checks the driver is loaded). Full chain: browser -> httpd -> CGI -> `/dev/myled` -> our driver -> GPIO -> LED.
+
+### Wi-Fi disruption while the board is on the network (open, watching)
+
+- Symptom: while the board is connected to the Vidéotron router, a video call on another computer (on Wi-Fi) stops. Not an IP conflict (the other computer has a different IP), and only one `Link is Up` in `dmesg` (no link flapping).
+- Suspect: Ethernet **pause frames**. `ethtool eth0` shows the board advertises `Transmit-only` pause and the router `Symmetric Receive-only`, so the board may send pause frames and the router obeys them (boot log: `flow control tx`). On home routers this can stall the shared switch, including Wi-Fi traffic.
+- `ethtool -a eth0` gives "Operation not supported" (the macb driver has no pause settings), so pause is turned off through the PHY advertisement instead: `ethtool -s eth0 advertise 0x02f` (10/100 half+full and 1000 full, no Pause/Asym_Pause bits). Then `dmesg | tail` should show `flow control off`.
+- Not applied yet: `ethtool -S eth0 | grep -i pause` showed no pause frames so far. Next time the problem happens, check whether `tx_pause_frames` climbs; if so, apply the advertise fix and make it permanent with a `post-up` line in `overlay/etc/network/interfaces`.
+- Other test: stop the board at the U-Boot prompt during a call. If the call still drops, the PHY itself causes it (hardware).
+
+### Second board and SD card corruption
+
+- The same SD card boots on a second MicroZed (same PS for 7010/7020; set the boot jumpers to SD first).
+- On the first try it panicked: `EXT4-fs (mmcblk0p2): group descriptors corrupted!` / `VFS: Unable to mount root fs on unknown-block(179,2)` (179,2 = mmcblk0p2, the rootfs).
+- Cause: power was cut while the board was writing to the card (easy to do with all the PHY power-cycling). Fixed by re-flashing (or `sudo fsck.ext4 -fy /dev/sdb2`).
+- **Always run `poweroff` and wait for `reboot: System halted` before unplugging.**
 
 ## Next steps
 
-1. Fix the libgpiod2 tools, then drive LED D3 and read button PB1 (blocks N3-N5 in the command file).
-2. Connect Ethernet, get the IP with `ip addr show eth0`, and `ssh root@<ip>` from the PC (N7-N8).
-3. Cross-compile `hello.c` with `~/br-microzed/host/bin/arm-buildroot-linux-gnueabihf-gcc` (check the exact name), then `scp -O` it to the board (N9). Dropbear has no sftp server, hence `-O`.
+The next projects are written as self-contained briefs in `microzed/projects/` (index: `microzed/projects/README.md`), one per session. Start a new session with, for example: "Read `buildroot-microzed-project.md` and `microzed/projects/01-vivado-setup.md`, then let's do it." End each session with "update the md".
+
+1. `01-vivado-setup.md`: install Vivado, first bitstream.
+2. `02-axi-registers.md`: custom AXI register block, load the bitstream from Linux, driver.
+3. `03-pl-timer-interrupt.md`: PL timer interrupt, blocking read.
+4. `04-axi-dma-loopback.md`: AXI DMA loopback with the DMA engine framework.
+5. `05-dma-data-stream.md`: simulated ADC stream to a live web chart.
+6. `06-buildroot-package.md` (optional, any time): build our modules as Buildroot packages, `modprobe`.
+
+Still open on the side: watch the pause counters during the next Wi-Fi disruption; PHY test on board 2 (5 cold boots with the cable plugged in).
 
 ## Longer roadmap
 
@@ -117,3 +290,19 @@ Note: most PL (FPGA) pins only reach the MicroHeaders on the underside, so PL I/
 - Quit picocom: `Ctrl-A` then `Ctrl-X`. Quit QEMU: `Ctrl-A` then `X`.
 - Save and exit menuconfig: `Esc Esc` until it asks to save, then Yes.
 - Rebuild rules: new package means `make`; one changed package means `make <pkg>-rebuild && make`; toolchain or arch change means `make clean && make`.
+- A plain `make` does not rebuild a package when a menuconfig option it uses changes (example: `BR2_SYSTEM_DHCP` and `ifupdown-scripts`). Rebuild that package. If unsure which package uses the option, `make clean && make`.
+- Before re-flashing, check the result in `~/br-microzed/target/` (for example `ls target/usr/bin | grep gpio`, `cat target/etc/network/interfaces`).
+- A Buildroot package can be hidden in menuconfig because of a toolchain dependency (for example libgpiod2 needs headers >= 5.10). Search with `/` to see its "Depends on" line.
+- Re-flashing creates a new Dropbear host key. Clear the old one on the PC with `ssh-keygen -R <ip>`.
+- Find the board on the network without serial: `nmap -p 22 --open 10.0.0.0/24`.
+- Power up the MicroZed without the Ethernet cable, then plug it in (see the PHY issue above).
+- The overlay is copied during `make`. A file added to `~/mz-overlay` after the last `make` is not in `sdcard.img` until you run `make` again.
+- BusyBox options are changed with a config fragment, then `make busybox-dirclean && make` (a plain `make` does not reconfigure an already-built BusyBox).
+- Long `cat << EOF` pastes through KDE Connect can get cut off. For long files, paste into `nano` (Ctrl+Shift+V, save Ctrl+O, exit Ctrl+X) and check with `sh -n` and `tail`.
+- Run `poweroff` before unplugging, or the ext4 rootfs can get corrupted.
+- End an SSH session with `exit` or Ctrl-D; force-close a frozen one with Enter, `~`, `.`.
+- Board shell errors look like `-sh: <cmd>: not found`. If a laptop command (`ssh-copy-id`, `curl`, `make`) gives that, you are in the board's SSH session: `exit` first. Prompt `#` = board, `fabio@fabio-UX430UAR:~$` = laptop.
+- A background command in a CGI script must redirect its input and output (`</dev/null >/dev/null 2>&1 &`), or httpd waits for it and the page hangs.
+- Copying over a running program fails with "Text file busy": stop it first.
+- The overlay only adds files. To remove something from the image (like the old `S99leddaemon`), delete it from `~/mz-overlay` **and** from `~/br-microzed/target/` (`make overlay` does this for `S99leddaemon`).
+- `poweroff` stops services, syncs and halts Linux, but the MicroZed has no software power switch: the LEDs stay on. Wait for `reboot: System halted` (serial) or for SSH/ping to stop, then unplug.

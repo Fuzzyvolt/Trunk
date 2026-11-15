@@ -1,0 +1,60 @@
+#!/bin/sh
+# Status page: XADC temperature and voltages, system info, LED controls.
+echo "Content-Type: text/html"
+echo ""
+
+X=""
+for d in /sys/bus/iio/devices/iio:device*; do
+  [ "$(cat $d/name 2>/dev/null)" = "xadc" ] && X=$d
+done
+
+TEMP="n/a"
+[ -n "$X" ] && TEMP=$(awk -v r=$(cat $X/in_temp0_raw) -v o=$(cat $X/in_temp0_offset) \
+  -v s=$(cat $X/in_temp0_scale) 'BEGIN{printf "%.1f", (r+o)*s/1000}')
+
+MODEL=$(tr -d '\0' < /proc/device-tree/model)
+UP=$(awk '{printf "%dh %dm", $1/3600, ($1%3600)/60}' /proc/uptime)
+LOAD=$(cut -d' ' -f1-3 /proc/loadavg)
+MEM=$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{printf "%d / %d MB free", a/1024, t/1024}' /proc/meminfo)
+IP=$(ip -4 addr show eth0 | awk '/inet /{print $2}')
+
+# LED state comes from the myled_irq kernel driver.
+if [ -c /dev/myled ]; then
+  [ "$(cat /dev/myled)" = "1" ] && LED="ON" || LED="OFF"
+else
+  LED="unknown (myled_irq driver not loaded)"
+fi
+
+cat << HTML
+<!doctype html><html><head>
+<meta name="viewport" content="width=device-width">
+<meta http-equiv="refresh" content="5">
+<title>MicroZed status</title>
+<style>body{font-family:sans-serif;margin:16px}td{padding:4px 12px 4px 0}button{font-size:1em;padding:8px 14px;margin:4px 4px 4px 0}</style>
+</head><body>
+<h2>$MODEL</h2>
+<table>
+<tr><td>Die temperature</td><td><b>$TEMP &deg;C</b></td></tr>
+$(for f in $X/in_voltage*_raw; do
+  n=${f%_raw}
+  awk -v l="$(cat ${n}_label)" -v r=$(cat $f) -v s=$(cat ${n}_scale) \
+    'BEGIN{printf "<tr><td>%s</td><td>%.3f V</td></tr>\n", l, r*s/1000}'
+done)
+<tr><td>Uptime</td><td>$UP</td></tr>
+<tr><td>Load</td><td>$LOAD</td></tr>
+<tr><td>Memory</td><td>$MEM</td></tr>
+<tr><td>IP</td><td>$IP</td></tr>
+<tr><td>Kernel</td><td>$(uname -r)</td></tr>
+</table>
+<p>LED D3: <b>$LED</b></p>
+<form method="post" action="/cgi-bin/control">
+<button name="action" value="led_on">LED on</button>
+<button name="action" value="led_off">LED off</button>
+<button name="action" value="led_toggle">Toggle</button>
+</form>
+<form method="post" action="/cgi-bin/control" style="margin-top:16px"
+ onsubmit="return confirm('Power off the board?')">
+<button name="action" value="poweroff" style="color:#b00">Power off</button>
+</form>
+</body></html>
+HTML

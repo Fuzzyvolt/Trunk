@@ -1,0 +1,8 @@
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet dhcp
+  pre-up ip link set eth0 address 02:0a:35:00:00:01
+  wait-delay 15
+  hostname $(hostname)
