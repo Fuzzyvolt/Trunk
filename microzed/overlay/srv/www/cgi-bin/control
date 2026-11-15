@@ -1,8 +1,8 @@
 #!/bin/sh
 # Handles button presses from the status page (POST only).
-# LED commands go to leddaemon through its FIFO; only exact values are accepted.
-FIFO=/tmp/led.fifo
-PIDFILE=/var/run/leddaemon.pid
+# LED commands go straight to the myled_irq kernel driver through /dev/myled.
+# Only exact values are accepted: nothing from the request reaches the shell.
+DEV=/dev/myled
 
 redirect() {
   echo "Status: 303 See Other"
@@ -11,20 +11,18 @@ redirect() {
   exit 0
 }
 
-# Send a command only if the daemon is running (writing to a FIFO with no
-# reader would block forever).
+# Write only if the driver is loaded (-c: the character device exists).
 send() {
-  [ -f $PIDFILE ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null && [ -p $FIFO ] \
-    && echo "$1" > $FIFO
+  [ -c $DEV ] && echo "$1" > $DEV
 }
 
 [ "$REQUEST_METHOD" = "POST" ] || redirect
 BODY=$(head -c "${CONTENT_LENGTH:-0}")
 
 case "$BODY" in
-  action=led_on)     send on;     redirect ;;
-  action=led_off)    send off;    redirect ;;
-  action=led_toggle) send toggle; redirect ;;
+  action=led_on)     send 1; redirect ;;
+  action=led_off)    send 0; redirect ;;
+  action=led_toggle) send t; redirect ;;
   action=poweroff)
     echo "Content-Type: text/html"
     echo ""

@@ -1,8 +1,8 @@
 # MicroZed apps and overlay files.
 #
-#   make            build the programs (into build/)
-#   make overlay    copy programs + overlay files into ~/mz-overlay (then run make in ~/br-microzed)
-#   make push       copy programs + scripts straight to the running board and restart services
+#   make            build the programs (into build/) and the myled_irq kernel module
+#   make overlay    copy programs, module and overlay files into ~/mz-overlay
+#   make push       copy everything straight to the running board and reload the driver
 #   make image      make overlay, then rebuild the Buildroot image
 #   make flash      make image, then write it to the SD card (default /dev/sdb, override with SD=/dev/sdc)
 #
@@ -20,7 +20,14 @@ LDLIBS  := -lgpiod
 APPS    := hello blink leddaemon
 BINS    := $(addprefix build/,$(APPS))
 
-all: $(BINS)
+# Kernel module loaded at boot by /etc/init.d/S30myled
+KMOD_DIR := modules/myled-irq
+KO       := $(KMOD_DIR)/myled_irq.ko
+
+all: $(BINS) module
+
+module:
+	$(MAKE) -C $(KMOD_DIR) BR=$(BR)
 
 build:
 	mkdir -p build
@@ -32,14 +39,20 @@ build/%: apps/%.c | build
 overlay: all
 	cp -a overlay/. $(OVERLAY)/
 	install -D -m 755 -t $(OVERLAY)/usr/bin $(BINS)
+	install -D -m 644 -t $(OVERLAY)/lib/modules/myled $(KO)
+	# leddaemon is retired (the driver does its job). The overlay only adds files,
+	# so remove its old init script from the overlay and from Buildroot's target/.
+	rm -f $(OVERLAY)/etc/init.d/S99leddaemon $(BR)/target/etc/init.d/S99leddaemon
 	@echo "Copied into $(OVERLAY). Now run 'make' in $(BR) and re-flash."
 
 push: all
-	-ssh root@$(BOARD) '/etc/init.d/S99leddaemon stop; kill $$(cat /tmp/led.pid) 2>/dev/null; rm -f /tmp/led.pid'
+	-ssh root@$(BOARD) '/etc/init.d/S99leddaemon stop 2>/dev/null; rm -f /etc/init.d/S99leddaemon; /etc/init.d/S30myled stop 2>/dev/null; rmmod myled_irq myled_dt myled 2>/dev/null; true'
+	ssh root@$(BOARD) 'mkdir -p /lib/modules/myled'
+	scp -O $(KO) root@$(BOARD):/lib/modules/myled/
 	scp -O $(BINS) root@$(BOARD):/usr/bin/
 	scp -O overlay/srv/www/cgi-bin/* root@$(BOARD):/srv/www/cgi-bin/
-	scp -O overlay/etc/init.d/S90httpd overlay/etc/init.d/S99leddaemon root@$(BOARD):/etc/init.d/
-	ssh root@$(BOARD) 'rm -f /srv/www/index.html; /etc/init.d/S99leddaemon start'
+	scp -O overlay/etc/init.d/* root@$(BOARD):/etc/init.d/
+	ssh root@$(BOARD) 'rm -f /srv/www/index.html; /etc/init.d/S30myled start'
 
 image: overlay
 	$(MAKE) -C $(BR)
@@ -49,5 +62,6 @@ flash: image
 
 clean:
 	rm -rf build
+	$(MAKE) -C $(KMOD_DIR) BR=$(BR) clean
 
-.PHONY: all overlay push image flash clean
+.PHONY: all module overlay push image flash clean

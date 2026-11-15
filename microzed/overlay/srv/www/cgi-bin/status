@@ -18,11 +18,11 @@ LOAD=$(cut -d' ' -f1-3 /proc/loadavg)
 MEM=$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{printf "%d / %d MB free", a/1024, t/1024}' /proc/meminfo)
 IP=$(ip -4 addr show eth0 | awk '/inet /{print $2}')
 
-PIDFILE=/var/run/leddaemon.pid
-if [ -f $PIDFILE ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
-  [ "$(cat /tmp/led.state 2>/dev/null)" = "1" ] && LED="ON" || LED="OFF"
+# LED state comes from the myled_irq kernel driver.
+if [ -c /dev/myled ]; then
+  [ "$(cat /dev/myled)" = "1" ] && LED="ON" || LED="OFF"
 else
-  LED="unknown (leddaemon not running)"
+  LED="unknown (myled_irq driver not loaded)"
 fi
 
 cat << HTML

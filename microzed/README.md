@@ -8,7 +8,7 @@ Source for the programs and the Buildroot rootfs overlay used in `buildroot-micr
 |---|---|
 | `apps/hello.c` | Cross-compile test |
 | `apps/blink.c` | Blinks LED D3 until PB1 is pressed (libgpiod v1) |
-| `apps/leddaemon.c` | Daemon that owns LED D3 and PB1; takes commands from `/tmp/led.fifo` |
+| `apps/leddaemon.c`, `apps/leddaemon.init` | Retired user-space daemon for LED D3 and PB1 (replaced by the myled_irq driver); kept for reference |
 | `modules/hello/` | First kernel module (own Makefile, builds against the Buildroot kernel) |
 | `modules/myled-dt/` | Same `/dev/myled`, as a platform driver bound to a device tree node (`compatible = "microzed,myled"`) |
 | `modules/myled-irq/` | Adds PB1 with an interrupt: `/dev/mybutton` blocks until a press; a press toggles the LED |
@@ -16,7 +16,7 @@ Source for the programs and the Buildroot rootfs overlay used in `buildroot-micr
 | `modules/myled/` | Character driver: `/dev/myled` controls LED D3 (`echo 1`, `echo 0`, `echo t`, `cat`) |
 | `overlay/` | Files copied into the board's root filesystem (mirrors `/`) |
 | `overlay/etc/init.d/S90httpd` | Starts BusyBox httpd at boot |
-| `overlay/etc/init.d/S99leddaemon` | Starts leddaemon at boot |
+| `overlay/etc/init.d/S30myled` | Loads the myled_irq driver at boot (`/lib/modules/myled/myled_irq.ko`) |
 | `overlay/etc/network/interfaces` | eth0 DHCP with the fixed MAC `02:0a:35:00:00:01` |
 | `overlay/srv/www/cgi-bin/` | Web page: `status`, `control` (buttons), `index.cgi` (redirect for `/`) |
 | `configs/busybox.fragment` | BusyBox options (httpd + CGI) |
@@ -49,9 +49,11 @@ make overlay    # copy into ~/mz-overlay for the next image
 
 `make push` asks for the root password several times unless you set up a key with `ssh-copy-id root@10.0.0.134`.
 
-## LED daemon
+## LED daemon (retired)
 
-- Started at boot by `S99leddaemon`. Start/stop by hand: `/etc/init.d/S99leddaemon start|stop|restart`.
+Replaced by the myled_irq kernel driver, which is loaded at boot. To use the daemon again, copy `apps/leddaemon.init` to `/etc/init.d/S99leddaemon` and unload the driver first.
+
+
 - Commands: `echo on > /tmp/led.fifo` (also `off`, `toggle`).
 - PB1 toggles the LED.
 - State for the web page: `/tmp/led.state`.
@@ -139,3 +141,12 @@ insmod /root/myled_irq.ko
 cat /dev/mybutton            # prints "press N" on every PB1 press, Ctrl-C to stop
 grep myled /proc/interrupts  # interrupt count
 ```
+
+## Driver at boot (current setup)
+
+- `make` also builds `modules/myled-irq/myled_irq.ko`.
+- `make overlay` / `make flash` install it as `/lib/modules/myled/myled_irq.ko`; `/etc/init.d/S30myled` loads it at boot with `insmod`.
+- `make push` stops and removes leddaemon on the board, unloads any myled module, copies the module, programs and scripts, and loads the driver.
+- The web page writes to `/dev/myled` and reads the LED state from it.
+- By hand: `/etc/init.d/S30myled start|stop|restart`.
+- After a kernel change in Buildroot, rebuild the module (`make`): a module built for another kernel fails to load ("invalid module format").
