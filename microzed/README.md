@@ -11,6 +11,7 @@ Source for the programs and the Buildroot rootfs overlay used in `buildroot-micr
 | `apps/leddaemon.c` | Daemon that owns LED D3 and PB1; takes commands from `/tmp/led.fifo` |
 | `modules/hello/` | First kernel module (own Makefile, builds against the Buildroot kernel) |
 | `modules/myled-dt/` | Same `/dev/myled`, as a platform driver bound to a device tree node (`compatible = "microzed,myled"`) |
+| `modules/myled-irq/` | Adds PB1 with an interrupt: `/dev/mybutton` blocks until a press; a press toggles the LED |
 | `board/post-image-dt.sh` | Buildroot post-image script: adds the `myled` node to the `.dtb` before the SD image is made |
 | `modules/myled/` | Character driver: `/dev/myled` controls LED D3 (`echo 1`, `echo 0`, `echo t`, `cat`) |
 | `overlay/` | Files copied into the board's root filesystem (mirrors `/`) |
@@ -121,4 +122,20 @@ On the board: check the node with `ls /proc/device-tree/myled`, then load the dr
 insmod /root/myled_dt.ko
 ls /sys/bus/platform/drivers/myled/
 echo 1 > /dev/myled
+```
+
+### myled-irq (button interrupt)
+
+Needs `button-gpios` in the node: re-run `make flash` after pulling (the post-image script adds it).
+
+```bash
+cd ~/trunk/microzed/modules/myled-irq && make push
+```
+
+On the board (stop leddaemon, `rmmod` any other myled module first):
+
+```bash
+insmod /root/myled_irq.ko
+cat /dev/mybutton            # prints "press N" on every PB1 press, Ctrl-C to stop
+grep myled /proc/interrupts  # interrupt count
 ```

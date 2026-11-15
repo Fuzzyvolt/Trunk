@@ -16,6 +16,7 @@
 #           compatible = "microzed,myled";
 #           label = "d3";
 #           led-gpios = <&gpio0 47 0>;    /* MIO47, 0 = active high */
+#           button-gpios = <&gpio0 51 0>; /* MIO51, PB1 */
 #       };
 #   };
 set -e
@@ -32,10 +33,6 @@ for DTB in "$IMAGES"/*.dtb; do
   [ -f "$DTB" ] || continue
   found=1
 
-  if fdtget "$DTB" /myled compatible >/dev/null 2>&1; then
-    echo "post-image-dt: $(basename "$DTB") already has /myled"
-    continue
-  fi
   fdtget "$DTB" $GPIO_NODE compatible >/dev/null 2>&1 \
     || { echo "post-image-dt: $GPIO_NODE not found in $DTB"; exit 1; }
 
@@ -50,11 +47,14 @@ for DTB in "$IMAGES"/*.dtb; do
     fdtput -t u "$DTB" $GPIO_NODE phandle $PH
   fi
 
-  fdtput -c "$DTB" /myled
+  # Create the node if needed, then (re)write all its properties, so running
+  # this again on an already-modified .dtb updates it instead of failing.
+  fdtget "$DTB" /myled compatible >/dev/null 2>&1 || fdtput -c "$DTB" /myled
   fdtput -t s "$DTB" /myled compatible "microzed,myled"
   fdtput -t s "$DTB" /myled label "d3"
   fdtput -t u "$DTB" /myled led-gpios $PH 47 0
-  echo "post-image-dt: added /myled to $(basename "$DTB") (gpio phandle $PH)"
+  fdtput -t u "$DTB" /myled button-gpios $PH 51 0
+  echo "post-image-dt: /myled set in $(basename "$DTB") (gpio phandle $PH)"
 done
 
 [ $found = 1 ] || { echo "post-image-dt: no .dtb in $IMAGES"; exit 1; }
