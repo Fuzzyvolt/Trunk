@@ -94,7 +94,7 @@ As of 2026-11-15: **GPIO, SSH (key login), cross-compiled programs, rootfs overl
 All source files now live in the git repo, in `microzed/` (see `microzed/README.md`). Claude writes files there; the laptop gets them with git.
 
 - Laptop clone: `~/trunk` (private repo: git asks for the GitHub username and a personal access token). Update with `cd ~/trunk && git pull`.
-- Branches: the work was done on `claude/micro-zed-project-ideas-o0fk5t` and merged into the repo's default branch, `claude/github-setup-i4kllz`, so new sessions see it. After the merge, switch the laptop clone with `git checkout claude/github-setup-i4kllz && git pull`. New sessions work on their own branch; merge each one back into the default branch when done.
+- Repo: `Fuzzyvolt/microzed-linux` (renamed from `Trunk`), default branch `main` (renamed from `claude/github-setup-i4kllz`). Each session works on its own branch; merge its pull request into `main` when done, so the next session sees the work.
 - `cd ~/trunk/microzed`, then:
   - `make`: cross-compile the programs into `build/`.
   - `make`: also builds the `myled_irq` kernel module.

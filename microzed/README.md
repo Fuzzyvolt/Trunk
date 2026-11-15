@@ -30,7 +30,7 @@ Not in git: the SSH host keys in `~/mz-overlay/etc/dropbear/` (private).
 First time:
 
 ```bash
-git clone -b claude/micro-zed-project-ideas-o0fk5t https://github.com/fuzzyvolt/trunk.git ~/trunk
+git clone https://github.com/Fuzzyvolt/microzed-linux.git ~/trunk
 ```
 
 After that, to get updates:
