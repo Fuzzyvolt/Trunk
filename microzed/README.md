@@ -21,6 +21,7 @@ Source for the programs and the Buildroot rootfs overlay used in `buildroot-micr
 | `overlay/srv/www/cgi-bin/` | Web page: `status`, `control` (buttons), `index.cgi` (redirect for `/`) |
 | `configs/busybox.fragment` | BusyBox options (httpd + CGI) |
 | `Makefile` | Build, copy to the overlay, or push to the board |
+| `projects/` | Briefs for the next projects (FPGA side), one per session |
 
 Not in git: the SSH host keys in `~/mz-overlay/etc/dropbear/` (private).
 
