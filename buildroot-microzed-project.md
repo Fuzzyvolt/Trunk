@@ -81,7 +81,7 @@ Harmless boot messages:
 
 ## Current state (where we stopped)
 
-As of 2026-11-14 (night): **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and an LED daemon all work.** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello` and `myled` (character driver) also work. Next: device tree + platform driver.
+As of 2026-11-14 (night): **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and an LED daemon all work.** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver) and `myled-dt` (device tree platform driver) also work.
 
 1. `~/br-microzed/.config` has: `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), **ethtool**, a root password, `BR2_SYSTEM_DHCP="eth0"`, `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`, and the BusyBox fragment `/home/fabio/mz-busybox.fragment`.
 2. GPIO: `gpiodetect` shows `gpiochip0 [zynq_gpio] (118 lines)` (lines 0-53 = MIO, 54-117 = EMIO). LED D3 and button PB1 are owned by `leddaemon`.
@@ -212,6 +212,17 @@ Each module has its own folder and Makefile. The Makefile calls the kernel's own
 - Loading it while leddaemon runs fails with "Device or resource busy" (`-16`, -EBUSY): the kernel allows one owner per GPIO line. Stop leddaemon first, start it again after `rmmod myled`.
 - `class_create()` lost its first argument (`THIS_MODULE`) in kernel 6.4, handled with a `LINUX_VERSION_CODE` check.
 
+**myled-dt** device tree + platform driver (works): same `/dev/myled`, but the hardware comes from a device tree node.
+- `microzed/board/post-image-dt.sh` adds this node to the built `.dtb` with `fdtput` (from `device-tree-compiler`), giving the GPIO controller a `phandle` if it has none:
+  ```
+  myled { compatible = "microzed,myled"; label = "d3"; led-gpios = <&gpio0 47 0>; };
+  ```
+  Editing the compiled `.dtb` avoids depending on the kernel's `.dts` file location and keeps the `.dtb` name the boot setup expects.
+- Buildroot setting: `BR2_ROOTFS_POST_IMAGE_SCRIPT="/home/fabio/trunk/microzed/board/post-image-dt.sh board/zynq/post-image.sh"`. **Order matters**: our script must run before `board/zynq/post-image.sh`, which runs genimage to make `sdcard.img`.
+- Check before flashing: `fdtget ~/br-microzed/images/*.dtb /myled compatible`. On the board: `ls /proc/device-tree/myled/`; the platform device exists even before the driver loads (`/sys/bus/platform/devices/`).
+- The driver only registers itself in init; the kernel calls `probe()` for each node whose `compatible` matches `of_match_table`. `probe()` reads `label` (`device_property_read_string`) and `led-gpios` (`devm_gpiod_get(dev, "led", ...)`), then creates `/dev/myled`. `devm_*` resources are freed automatically on unbind. Binding shows in `/sys/bus/platform/drivers/myled/`.
+- `platform_driver.remove` returns void from kernel 6.11 (int before), handled with `LINUX_VERSION_CODE`.
+
 ### Wi-Fi disruption while the board is on the network (open, watching)
 
 - Symptom: while the board is connected to the Vidéotron router, a video call on another computer (on Wi-Fi) stops. Not an IP conflict (the other computer has a different IP), and only one `Link is Up` in `dmesg` (no link flapping).
@@ -229,11 +240,10 @@ Each module has its own folder and Makefile. The Makefile calls the kernel's own
 
 ## Next steps
 
-1. **Device tree + platform driver** (in progress): add a `myled` node to the device tree, and a platform driver that the kernel binds to it by its `compatible` string.
-2. Point the web page's `control` script at `/dev/myled`.
-3. Load the driver at boot; add the button with an interrupt handler and a blocking `read()`.
-4. Watch the pause counters during the next Wi-Fi disruption.
-5. PHY test on board 2: 5 cold boots with the Ethernet cable plugged in; tally good/bad.
+1. Point the web page's `control` script at `/dev/myled`.
+2. Load the driver at boot; add the button with an interrupt handler and a blocking `read()`.
+3. Watch the pause counters during the next Wi-Fi disruption.
+4. PHY test on board 2: 5 cold boots with the Ethernet cable plugged in; tally good/bad.
 
 ## Longer roadmap
 
