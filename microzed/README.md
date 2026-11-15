@@ -30,19 +30,19 @@ Not in git: the SSH host keys in `~/mz-overlay/etc/dropbear/` (private).
 First time:
 
 ```bash
-git clone https://github.com/Fuzzyvolt/microzed-linux.git ~/trunk
+git clone https://github.com/Fuzzyvolt/microzed-linux.git ~/microzed-linux
 ```
 
 After that, to get updates:
 
 ```bash
-cd ~/trunk && git pull
+cd ~/microzed-linux && git pull
 ```
 
 ## Use
 
 ```bash
-cd ~/trunk/microzed
+cd ~/microzed-linux/microzed
 make            # build the programs
 make push       # test on the running board right away (no re-flash)
 make overlay    # copy into ~/mz-overlay for the next image
@@ -75,7 +75,7 @@ This copies the overlay, rebuilds the Buildroot image, then runs `flash-sd.sh`: 
 Each module has its own folder and Makefile, which builds against the kernel tree Buildroot built (`~/br-microzed/build/linux-*`).
 
 ```bash
-cd ~/trunk/microzed/modules/hello
+cd ~/microzed-linux/microzed/modules/hello
 make            # builds hello.ko
 make push       # copies it to the board's /root/
 ```
@@ -93,7 +93,7 @@ A module only loads into the exact kernel it was built against. After a kernel c
 ### myled (character driver)
 
 ```bash
-cd ~/trunk/microzed/modules/myled && make push
+cd ~/microzed-linux/microzed/modules/myled && make push
 ```
 
 On the board (stop leddaemon first, only one user of the LED line at a time):
@@ -117,7 +117,7 @@ cd ~/br-microzed && make menuconfig
 ```
 
 System configuration -> "Custom scripts to run after creating filesystem images": put
-`/home/fabio/trunk/microzed/board/post-image-dt.sh` in front of what is already there (keep the genimage script after it). Then `make flash`.
+`/home/fabio/microzed-linux/microzed/board/post-image-dt.sh` in front of what is already there (keep the genimage script after it). Then `make flash`.
 
 On the board: check the node with `ls /proc/device-tree/myled`, then load the driver (stop leddaemon and `rmmod myled` first):
 
@@ -132,7 +132,7 @@ echo 1 > /dev/myled
 Needs `button-gpios` in the node: re-run `make flash` after pulling (the post-image script adds it).
 
 ```bash
-cd ~/trunk/microzed/modules/myled-irq && make push
+cd ~/microzed-linux/microzed/modules/myled-irq && make push
 ```
 
 On the board (stop leddaemon, `rmmod` any other myled module first):

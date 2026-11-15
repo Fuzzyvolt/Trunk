@@ -4,7 +4,7 @@
 #
 # Set in Buildroot menuconfig (System configuration -> Custom scripts to run
 # after creating filesystem images), BEFORE the existing genimage script:
-#   /home/fabio/trunk/microzed/board/post-image-dt.sh support/scripts/genimage.sh
+#   /home/fabio/microzed-linux/microzed/board/post-image-dt.sh board/zynq/post-image.sh
 #
 # Buildroot calls it with the images folder as $1 (extra arguments are ignored).
 # Needs fdtget/fdtput/dtc on the PC:  sudo apt install device-tree-compiler

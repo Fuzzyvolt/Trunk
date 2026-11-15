@@ -89,13 +89,13 @@ As of 2026-11-15: **GPIO, SSH (key login), cross-compiled programs, rootfs overl
 4. Web page: `http://10.0.0.134` (redirects to `/cgi-bin/status`): die temperature, all XADC voltage rails, uptime, load, memory, IP, kernel, LED state, and buttons (LED on/off/toggle, power off). Refreshes every 5 s.
 5. Config backup: `~/mz-overlay-microzed.config` (copy of `.config`).
 
-### Repo workflow (`~/trunk/microzed`)
+### Repo workflow (`~/microzed-linux/microzed`)
 
 All source files now live in the git repo, in `microzed/` (see `microzed/README.md`). Claude writes files there; the laptop gets them with git.
 
-- Laptop clone: `~/trunk` (private repo: git asks for the GitHub username and a personal access token). Update with `cd ~/trunk && git pull`.
+- Laptop clone: `~/microzed-linux` (private repo: git asks for the GitHub username and a personal access token). Update with `cd ~/microzed-linux && git pull`.
 - Repo: `Fuzzyvolt/microzed-linux` (renamed from `Trunk`), default branch `main` (renamed from `claude/github-setup-i4kllz`). Each session works on its own branch; merge its pull request into `main` when done, so the next session sees the work.
-- `cd ~/trunk/microzed`, then:
+- `cd ~/microzed-linux/microzed`, then:
   - `make`: cross-compile the programs into `build/`.
   - `make`: also builds the `myled_irq` kernel module.
   - `make push`: unload the driver (and remove leddaemon if still there), copy the module, programs and scripts to the running board over SSH, load the driver again. No re-flash needed.
@@ -222,7 +222,7 @@ Each module has its own folder and Makefile. The Makefile calls the kernel's own
   myled { compatible = "microzed,myled"; label = "d3"; led-gpios = <&gpio0 47 0>; };
   ```
   Editing the compiled `.dtb` avoids depending on the kernel's `.dts` file location and keeps the `.dtb` name the boot setup expects.
-- Buildroot setting: `BR2_ROOTFS_POST_IMAGE_SCRIPT="/home/fabio/trunk/microzed/board/post-image-dt.sh board/zynq/post-image.sh"`. **Order matters**: our script must run before `board/zynq/post-image.sh`, which runs genimage to make `sdcard.img`.
+- Buildroot setting: `BR2_ROOTFS_POST_IMAGE_SCRIPT="/home/fabio/microzed-linux/microzed/board/post-image-dt.sh board/zynq/post-image.sh"`. **Order matters**: our script must run before `board/zynq/post-image.sh`, which runs genimage to make `sdcard.img`.
 - Check before flashing: `fdtget ~/br-microzed/images/*.dtb /myled compatible`. On the board: `ls /proc/device-tree/myled/`; the platform device exists even before the driver loads (`/sys/bus/platform/devices/`).
 - The driver only registers itself in init; the kernel calls `probe()` for each node whose `compatible` matches `of_match_table`. `probe()` reads `label` (`device_property_read_string`) and `led-gpios` (`devm_gpiod_get(dev, "led", ...)`), then creates `/dev/myled`. `devm_*` resources are freed automatically on unbind. Binding shows in `/sys/bus/platform/drivers/myled/`.
 - `platform_driver.remove` returns void from kernel 6.11 (int before), handled with `LINUX_VERSION_CODE`.

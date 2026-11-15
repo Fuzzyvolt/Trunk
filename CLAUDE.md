@@ -16,7 +16,7 @@ This repo has two uses:
 
 - Start by reading `buildroot-microzed-project.md` (board, Buildroot setup, repo workflow, lessons learned, current state). For a new project, also read its brief in `microzed/projects/` (index: `microzed/projects/README.md`).
 - The user is learning: explain from the basics, with a small diagram first when it helps.
-- The user runs commands on a Linux Mint laptop (`~/trunk` is the clone, `~/br-microzed` the Buildroot build, `~/mz-overlay` the rootfs overlay) and on the board (`ssh root@10.0.0.134`). Claude cannot reach either. Give commands in chat, one per code block, and say whether each runs on the laptop or the board.
+- The user runs commands on a Linux Mint laptop (`~/microzed-linux` is the clone, `~/br-microzed` the Buildroot build, `~/mz-overlay` the rootfs overlay) and on the board (`ssh root@10.0.0.134`). Claude cannot reach either. Give commands in chat, one per code block, and say whether each runs on the laptop or the board.
 - Code and files Claude writes go in `microzed/` (layout in `microzed/README.md`); the user gets them with `git pull` and uses `make`, `make push`, `make flash` in `microzed/`.
 - Claude cannot build for the board here (no ARM toolchain or kernel tree): check syntax where possible, say what was not tested, and ask the user to paste build errors.
 - When the user says "update the md", record what was done, what works, open problems and lessons learned in `buildroot-microzed-project.md`, and update the next steps.
