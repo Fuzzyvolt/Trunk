@@ -1,4 +1,5 @@
 # Project 01: a block design with only the Zynq PS, built to a bitstream.
+# Tested with Vivado 2026.1 (Basic) on Linux Mint 22.
 #
 # Run on the laptop (after "source <Vivado>/settings64.sh"):
 #   vivado -mode batch -source build.tcl

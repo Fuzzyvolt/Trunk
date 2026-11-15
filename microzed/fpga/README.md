@@ -5,7 +5,7 @@ outside the repo, in `~/vivado/<name>`, because they are large and full of gener
 
 | Folder | What it is |
 |---|---|
-| `01-ps-only/build.tcl` | Project 01: block design with only the Zynq PS, builds `.bit` and `.xsa` |
+| `01-ps-only/build.tcl` | Project 01: block design with only the Zynq PS, builds `.bit` and `.xsa` (tested, works with Vivado 2026.1) |
 
 ## One-time setup (laptop)
 

@@ -1,6 +1,6 @@
 # Buildroot + QEMU + MicroZed: project summary
 
-Last updated: 2026-11-15 (evening)
+Last updated: 2026-11-15 (night, project 01 done)
 
 Load this file at the start of a new session to continue the project.
 
@@ -88,6 +88,20 @@ As of 2026-11-15: **GPIO, SSH (key login), cross-compiled programs, rootfs overl
 3. Network: fixed MAC `02:0a:35:00:00:01`, so the board gets **10.0.0.134**. `ssh root@10.0.0.134` logs in with a key (no password).
 4. Web page: `http://10.0.0.134` (redirects to `/cgi-bin/status`): die temperature, all XADC voltage rails, uptime, load, memory, IP, kernel, LED state, and buttons (LED on/off/toggle, power off). Refreshes every 5 s.
 5. Config backup: `~/mz-overlay-microzed.config` (copy of `.config`).
+
+### Vivado (project 01, done 2026-11-15)
+
+- **Vivado 2026.1**, edition **Vivado Basic** (free), installed in `/tools/Xilinx/2026.1/Vivado` (folder made with `sudo mkdir -p /tools/Xilinx && sudo chown fabio: /tools/Xilinx`, installer run as the normal user). Devices: Zynq-7000 only. 21 GB download, about 80 GB on disk. Vitis, Model Composer and cable drivers not installed (the MicroZed has no on-board USB-JTAG).
+- Load it in a terminal with `vivado-env` (alias in `~/.bashrc` for `source /tools/Xilinx/2026.1/Vivado/settings64.sh`); the menu entry works without it. Not sourced in every shell on purpose, so AMD's tools stay out of the Buildroot builds.
+- **License:** from 2026.1, Vivado will not start without a license file, even the free tier. Free **Vivado Basic Tier, node-locked**, generated on the AMD licensing site (VLM -> Obtain License -> "Get My Full or Purchased Certificate-Based License" -> Connect Now), host ID = the laptop's Wi-Fi MAC (added as a new host; the "Farbauti" hosts already on the AMD account are another PC). Loaded with VLM -> Load License -> Copy License. **Valid 12 months, renew for free.** Basic does not cover patch releases (2026.1.x).
+- Extra libraries for Mint 22 (from Ubuntu 22.04, `security.ubuntu.com/ubuntu/pool/universe/n/ncurses/`): `libtinfo5_6.3-2ubuntu0.3_amd64.deb` and `libncurses5_6.3-2ubuntu0.3_amd64.deb`, installed with `sudo apt install ./<file>.deb`. Also ran AMD's `Vivado/scripts/installLibs.sh` (it detects `linuxmint-22`).
+- **Board files:** Avnet `bdf` repo cloned to `~/vivado-boards/avnet-bdf`; `~/.Xilinx/Vivado/Vivado_init.tcl` contains `set_param board.repoPaths [list /home/fabio/vivado-boards/avnet-bdf]`. Board part `avnet-tria:microzed_7010:part0:1.4` (DDR3 MT41K256M16 RE-125). A `CRITICAL WARNING [Board 49-56]` about `zub1cg/1.2/board.xml` (another Avnet board) is harmless.
+- **Projects live outside git**, in `~/vivado/`:
+  - `~/vivado/mz01_gui`: made by hand in the GUI. Block design `system` with only the ZYNQ7 PS, block automation with the board preset, HDL wrapper, bitstream. Outputs `mz01_gui.runs/impl_1/system_wrapper.bit` and `system_wrapper.xsa`.
+  - `~/vivado/mz01_ps_only`: the same design built by `microzed/fpga/01-ps-only/build.tcl` (`vivado -mode batch -source build.tcl`), works. Writes `mz01_ps_only.bit` and `.xsa` in the project folder.
+- PS settings from the board preset (needed for project 02): FCLK_CLK0 = 100 MHz, M_AXI_GP0 off, fabric interrupts off.
+- Flow: block design -> HDL wrapper -> Generate Bitstream (runs synthesis and implementation itself if needed) -> File -> Export -> Export Hardware, "Include bitstream" (`.xsa`). Export fails with `[Common 17-69] Unable to get BIT file` if the bitstream run has not finished yet or is out of date.
+- Nothing loaded on the board yet (project 02).
 
 ### Repo workflow (`~/microzed-linux/microzed`)
 
@@ -258,9 +272,9 @@ Each module has its own folder and Makefile. The Makefile calls the kernel's own
 
 ## Next steps
 
-The next projects are written as self-contained briefs in `microzed/projects/` (index: `microzed/projects/README.md`), one per session. Start a new session with, for example: "Read `buildroot-microzed-project.md` and `microzed/projects/01-vivado-setup.md`, then let's do it." End each session with "update the md".
+The next projects are written as self-contained briefs in `microzed/projects/` (index: `microzed/projects/README.md`), one per session. Start a new session with, for example: "Read `buildroot-microzed-project.md` and `microzed/projects/02-axi-registers.md`, then let's do it." End each session with "update the md".
 
-1. `01-vivado-setup.md`: install Vivado, first bitstream.
+1. ~~`01-vivado-setup.md`: install Vivado, first bitstream.~~ Done 2026-11-15.
 2. `02-axi-registers.md`: custom AXI register block, load the bitstream from Linux, driver.
 3. `03-pl-timer-interrupt.md`: PL timer interrupt, blocking read.
 4. `04-axi-dma-loopback.md`: AXI DMA loopback with the DMA engine framework.
@@ -306,3 +320,7 @@ Note: most PL (FPGA) pins only reach the MicroHeaders on the underside, so PL I/
 - Copying over a running program fails with "Text file busy": stop it first.
 - The overlay only adds files. To remove something from the image (like the old `S99leddaemon`), delete it from `~/mz-overlay` **and** from `~/br-microzed/target/` (`make overlay` does this for `S99leddaemon`).
 - `poweroff` stops services, syncs and halts Linux, but the MicroZed has no software power switch: the LEDs stay on. Wait for `reboot: System halted` (serial) or for SSH/ping to stop, then unplug.
+- Vivado 2026.1 on Mint 22: needs `libtinfo5` **and** `libncurses5` from Ubuntu 22.04 (`libncurses.so.5: cannot open shared object file` otherwise). Package file names change with security updates (`ubuntu0.1` -> `ubuntu0.3`): look in the pool folder if a URL gives 404.
+- AMD's `installLibs.sh` ships with Windows line endings (`sudo: unable to execute ...: No such file or directory`, `head -1 | cat -A` shows `^M$`). Run a cleaned copy: `tr -d '\r' < installLibs.sh > /tmp/installLibs.sh`, then `sudo bash /tmp/installLibs.sh`.
+- Vivado Tcl does not expand `~` in `set_param board.repoPaths [list ...]`; use the full path. Test with `get_board_parts *microzed*` in the Tcl console.
+- `vivado: command not found` in a new terminal: run `vivado-env` (or source `settings64.sh`) first.
