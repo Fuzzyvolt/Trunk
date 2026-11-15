@@ -12,16 +12,18 @@ Source for the programs and the Buildroot rootfs overlay used in `buildroot-micr
 | `modules/hello/` | First kernel module (own Makefile, builds against the Buildroot kernel) |
 | `modules/myled-dt/` | Same `/dev/myled`, as a platform driver bound to a device tree node (`compatible = "microzed,myled"`) |
 | `modules/myled-irq/` | Adds PB1 with an interrupt: `/dev/mybutton` blocks until a press; a press toggles the LED |
-| `board/post-image-dt.sh` | Buildroot post-image script: adds the `myled` node to the `.dtb` before the SD image is made |
+| `board/post-image-dt.sh` | Buildroot post-image script: adds the `myled` and `axiregs@43c00000` nodes to the `.dtb` before the SD image is made |
+| `modules/axiregs/` | Project 02: platform driver for the AXI register block in the PL, sysfs files `reg0`, `reg1`, `sum`, `count`, `id` |
 | `modules/myled/` | Character driver: `/dev/myled` controls LED D3 (`echo 1`, `echo 0`, `echo t`, `cat`) |
 | `overlay/` | Files copied into the board's root filesystem (mirrors `/`) |
 | `overlay/etc/init.d/S90httpd` | Starts BusyBox httpd at boot |
 | `overlay/etc/init.d/S30myled` | Loads the myled_irq driver at boot (`/lib/modules/myled/myled_irq.ko`) |
+| `overlay/etc/init.d/S40axiregs` | Programs the PL with `/lib/firmware/axiregs.bin`, then loads the axiregs driver |
 | `overlay/etc/network/interfaces` | eth0 DHCP with the fixed MAC `02:0a:35:00:00:01` |
 | `overlay/srv/www/cgi-bin/` | Web page: `status`, `control` (buttons), `index.cgi` (redirect for `/`) |
 | `configs/busybox.fragment` | BusyBox options (httpd + CGI) |
 | `Makefile` | Build, copy to the overlay, or push to the board |
-| `fpga/` | FPGA (PL) sources: Vivado Tcl scripts; projects are built outside the repo |
+| `fpga/` | FPGA (PL) sources: Verilog, Vivado Tcl scripts; projects are built outside the repo |
 | `projects/` | Briefs for the next projects (FPGA side), one per session |
 
 Not in git: the SSH host keys in `~/mz-overlay/etc/dropbear/` (private).
@@ -152,3 +154,21 @@ grep myled /proc/interrupts  # interrupt count
 - The web page writes to `/dev/myled` and reads the LED state from it.
 - By hand: `/etc/init.d/S30myled start|stop|restart`.
 - After a kernel change in Buildroot, rebuild the module (`make`): a module built for another kernel fails to load ("invalid module format").
+
+## AXI register block (project 02)
+
+- `fpga/02-axiregs/build.tcl` makes `~/vivado/mz02_axiregs/axiregs.bin` (see `fpga/README.md`).
+- `make` builds `modules/axiregs/axiregs.ko`; `make overlay` / `make push` install it as `/lib/modules/axiregs/axiregs.ko` and the bitstream as `/lib/firmware/axiregs.bin` (skipped with a warning if it is not built yet).
+- At boot, `/etc/init.d/S40axiregs` programs the PL, then loads the driver. By hand: `/etc/init.d/S40axiregs start|stop|restart`.
+- The driver needs the `axiregs@43c00000` device tree node: `make flash` after pulling (the post-image script adds it).
+
+On the board:
+
+```bash
+cd /sys/bus/platform/devices/43c00000.axiregs
+echo 5 > reg0; echo 0x10 > reg1; cat sum     # 21
+cat count; cat count                          # rises by ~100 million per second
+cat id                                        # 0x4d5a0201
+```
+
+Never read `0x43C00000` (devmem or driver) before the bitstream is loaded: the CPU hangs until a power cycle.
