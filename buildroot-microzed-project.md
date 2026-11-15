@@ -1,6 +1,6 @@
 # Buildroot + QEMU + MicroZed: project summary
 
-Last updated: 2026-11-15 (afternoon)
+Last updated: 2026-11-15 (evening)
 
 Load this file at the start of a new session to continue the project.
 
@@ -81,10 +81,10 @@ Harmless boot messages:
 
 ## Current state (where we stopped)
 
-As of 2026-11-14 (night): **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and an LED daemon all work.** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver), `myled-dt` (device tree platform driver) and `myled-irq` (button interrupt, blocking `/dev/mybutton`) also work.
+As of 2026-11-15: **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and our own kernel driver (`myled_irq`, loaded at boot) all work.** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver), `myled-dt` (device tree platform driver) and `myled-irq` (button interrupt, blocking `/dev/mybutton`) also work.
 
 1. `~/br-microzed/.config` has: `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), **ethtool**, a root password, `BR2_SYSTEM_DHCP="eth0"`, `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`, and the BusyBox fragment `/home/fabio/mz-busybox.fragment`.
-2. GPIO: `gpiodetect` shows `gpiochip0 [zynq_gpio] (118 lines)` (lines 0-53 = MIO, 54-117 = EMIO). LED D3 and button PB1 are owned by `leddaemon`.
+2. GPIO: `gpiodetect` shows `gpiochip0 [zynq_gpio] (118 lines)` (lines 0-53 = MIO, 54-117 = EMIO). LED D3 and button PB1 are owned by the `myled_irq` kernel driver (`/dev/myled`, `/dev/mybutton`), loaded at boot by `/etc/init.d/S30myled`.
 3. Network: fixed MAC `02:0a:35:00:00:01`, so the board gets **10.0.0.134**. `ssh root@10.0.0.134` logs in with a key (no password).
 4. Web page: `http://10.0.0.134` (redirects to `/cgi-bin/status`): die temperature, all XADC voltage rails, uptime, load, memory, IP, kernel, LED state, and buttons (LED on/off/toggle, power off). Refreshes every 5 s.
 5. Config backup: `~/mz-overlay-microzed.config` (copy of `.config`).
@@ -96,7 +96,8 @@ All source files now live in the git repo, in `microzed/` (see `microzed/README.
 - Laptop clone: `~/trunk`, branch `claude/micro-zed-project-ideas-o0fk5t` (private repo: git asks for the GitHub username and a personal access token). Update with `cd ~/trunk && git pull`.
 - `cd ~/trunk/microzed`, then:
   - `make`: cross-compile the programs into `build/`.
-  - `make push`: stop leddaemon, copy programs and scripts to the running board over SSH, start leddaemon again. No re-flash needed for programs and scripts.
+  - `make`: also builds the `myled_irq` kernel module.
+  - `make push`: unload the driver (and remove leddaemon if still there), copy the module, programs and scripts to the running board over SSH, load the driver again. No re-flash needed.
   - `make overlay`: copy programs and overlay files into `~/mz-overlay`.
   - `make flash`: `make overlay`, rebuild Buildroot, then `flash-sd.sh` (checks the card is removable and not the PC's disk, asks for `yes`, unmounts, `dd`, sync, eject). `make flash SD=/dev/sdc` for another device.
 - Use `make push` for program/script changes, `make flash` for Buildroot changes (packages, kernel, BusyBox) or to make changes permanent.
@@ -108,13 +109,15 @@ All source files now live in the git repo, in `microzed/` (see `microzed/README.
 - To keep it after re-flashing, it is in the overlay: `~/mz-overlay/root/.ssh/authorized_keys` (folder 700, file 600; Dropbear ignores the key if permissions are looser).
 - `~/.ssh/id_ed25519` (no `.pub`) is the private key: keep it on the laptop only.
 
-### LED daemon (`microzed/apps/leddaemon.c`)
+### LED daemon (`microzed/apps/leddaemon.c`, retired)
 
-- Started at boot by `/etc/init.d/S99leddaemon` (BusyBox `start-stop-daemon`, pid file `/var/run/leddaemon.pid`).
+Replaced by the `myled_irq` kernel driver on 2026-11-15. Its init script is kept as `microzed/apps/leddaemon.init`. What it did:
+
+- Was started at boot by `/etc/init.d/S99leddaemon` (BusyBox `start-stop-daemon`, pid file `/var/run/leddaemon.pid`).
 - Owns LED D3 (output) and PB1 (both-edge events, so it sleeps until the button interrupt fires). Debounce: after an edge, wait until the line is quiet for 30 ms, then read the settled value; a 0 -> 1 change toggles the LED.
 - Commands through a FIFO: `echo on|off|toggle > /tmp/led.fifo`. The FIFO is opened read-write, so it never reports end-of-file when a writer closes it.
 - Writes the state to `/tmp/led.state` (temp file + rename, so readers never see half a file). Logs to syslog: `logread | grep leddaemon`. Foreground debug: stop the service, run `leddaemon -f`.
-- The web page's `control` CGI only accepts POST with exact values (`led_on`, `led_off`, `led_toggle`, `poweroff`), sends commands to the FIFO only if the daemon is running (a FIFO with no reader would block forever), and redirects back with `303 See Other`. Power off asks for confirmation in the browser.
+- The web page's `control` CGI only accepts POST with exact values (`led_on`, `led_off`, `led_toggle`, `poweroff`) and redirects back with `303 See Other`. Power off asks for confirmation in the browser. It used to send commands to the daemon's FIFO (only if the daemon was running: a FIFO with no reader blocks forever); it now writes `1`/`0`/`t` to `/dev/myled`.
 - While the daemon runs, `blink` and `gpioset` on lines 47/51 fail with "Device or resource busy" (only one program can own a line). Stop the daemon first.
 - Daemon vs CGI: an S99 daemon is started once by init and runs until shutdown (keeps state, reacts to hardware); a CGI script is started by httpd for each request and exits after printing the page. Real devices combine them: the daemon owns the hardware, the CGI talks to it.
 
@@ -231,6 +234,12 @@ Each module has its own folder and Makefile. The Makefile calls the kernel's own
 - Test: `cat /dev/mybutton`, or `while read p < /dev/mybutton; do echo "Got $p"; done`.
 - This is the pattern a DMA or ADC driver uses: the hardware interrupts when data is ready, the handler wakes the reader, `read()` returns the data.
 
+**Driver loaded at boot** (works):
+- `make overlay` / `make flash` install the module as `/lib/modules/myled/myled_irq.ko`; `/etc/init.d/S30myled` loads it with `insmod` (start/stop/restart by hand). The boot console shows `Loading myled_irq: OK`; `lsmod` lists it.
+- `insmod` with a full path instead of `modprobe`: `modprobe` needs the index built by `depmod`, and Buildroot runs `depmod` before copying the overlay, so it never sees our module. The proper long-term fix is a Buildroot package (`BR2_EXTERNAL`, kernel-module infrastructure), which also rebuilds the module with the kernel.
+- After a kernel change in Buildroot, rebuild the module (`make`), or it fails to load at boot with "invalid module format".
+- The web page now writes `1`/`0`/`t` to `/dev/myled` and reads the LED state from it (`[ -c /dev/myled ]` checks the driver is loaded). Full chain: browser -> httpd -> CGI -> `/dev/myled` -> our driver -> GPIO -> LED.
+
 ### Wi-Fi disruption while the board is on the network (open, watching)
 
 - Symptom: while the board is connected to the Vidéotron router, a video call on another computer (on Wi-Fi) stops. Not an IP conflict (the other computer has a different IP), and only one `Link is Up` in `dmesg` (no link flapping).
@@ -248,8 +257,8 @@ Each module has its own folder and Makefile. The Makefile calls the kernel's own
 
 ## Next steps
 
-1. Load the driver at boot (install the `.ko` in the image, `modprobe` from an init script) and point the web page's `control` script at `/dev/myled`; retire leddaemon.
-2. Start the FPGA side: install Vivado, build an AXI GPIO/PWM block in the PL, and write a platform driver for it (`compatible`, `reg`, `ioremap`).
+1. Start the FPGA side: install Vivado (free edition supports the 7010), build an AXI GPIO/PWM block in the PL, load the bitstream, and write a platform driver for it (`compatible`, `reg`, `ioremap`).
+2. Optional: package `myled_irq` as a Buildroot package (`BR2_EXTERNAL`) so it builds with the kernel and loads with `modprobe`.
 3. Watch the pause counters during the next Wi-Fi disruption.
 4. PHY test on board 2: 5 cold boots with the Ethernet cable plugged in; tally good/bad.
 
@@ -287,5 +296,6 @@ Note: most PL (FPGA) pins only reach the MicroHeaders on the underside, so PL I/
 - End an SSH session with `exit` or Ctrl-D; force-close a frozen one with Enter, `~`, `.`.
 - Board shell errors look like `-sh: <cmd>: not found`. If a laptop command (`ssh-copy-id`, `curl`, `make`) gives that, you are in the board's SSH session: `exit` first. Prompt `#` = board, `fabio@fabio-UX430UAR:~$` = laptop.
 - A background command in a CGI script must redirect its input and output (`</dev/null >/dev/null 2>&1 &`), or httpd waits for it and the page hangs.
-- Copying over a running program fails with "Text file busy": stop it first (`make push` does this for leddaemon).
+- Copying over a running program fails with "Text file busy": stop it first.
+- The overlay only adds files. To remove something from the image (like the old `S99leddaemon`), delete it from `~/mz-overlay` **and** from `~/br-microzed/target/` (`make overlay` does this for `S99leddaemon`).
 - `poweroff` stops services, syncs and halts Linux, but the MicroZed has no software power switch: the LEDs stay on. Wait for `reboot: System halted` (serial) or for SSH/ping to stop, then unplug.
