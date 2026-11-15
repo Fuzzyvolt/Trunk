@@ -10,3 +10,8 @@ overlay/etc/dropbear/
 modules.order
 Module.symvers
 .tmp_versions/
+# Vivado logs and caches (projects live outside the repo)
+*.jou
+*.str
+.Xil/
+vivado*.backup.*
