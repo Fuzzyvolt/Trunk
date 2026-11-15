@@ -1,6 +1,6 @@
 # Buildroot + QEMU + MicroZed: project summary
 
-Last updated: 2026-11-15
+Last updated: 2026-11-15 (afternoon)
 
 Load this file at the start of a new session to continue the project.
 
@@ -81,7 +81,7 @@ Harmless boot messages:
 
 ## Current state (where we stopped)
 
-As of 2026-11-14 (night): **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and an LED daemon all work.** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver) and `myled-dt` (device tree platform driver) also work.
+As of 2026-11-14 (night): **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and an LED daemon all work.** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver), `myled-dt` (device tree platform driver) and `myled-irq` (button interrupt, blocking `/dev/mybutton`) also work.
 
 1. `~/br-microzed/.config` has: `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), **ethtool**, a root password, `BR2_SYSTEM_DHCP="eth0"`, `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`, and the BusyBox fragment `/home/fabio/mz-busybox.fragment`.
 2. GPIO: `gpiodetect` shows `gpiochip0 [zynq_gpio] (118 lines)` (lines 0-53 = MIO, 54-117 = EMIO). LED D3 and button PB1 are owned by `leddaemon`.
@@ -223,6 +223,14 @@ Each module has its own folder and Makefile. The Makefile calls the kernel's own
 - The driver only registers itself in init; the kernel calls `probe()` for each node whose `compatible` matches `of_match_table`. `probe()` reads `label` (`device_property_read_string`) and `led-gpios` (`devm_gpiod_get(dev, "led", ...)`), then creates `/dev/myled`. `devm_*` resources are freed automatically on unbind. Binding shows in `/sys/bus/platform/drivers/myled/`.
 - `platform_driver.remove` returns void from kernel 6.11 (int before), handled with `LINUX_VERSION_CODE`.
 
+**myled-irq** button interrupt driver (works): adds PB1 to the same node (`button-gpios = <&gpio0 51 0>`, written by `post-image-dt.sh`, which now updates an existing node instead of skipping it).
+- `/dev/mybutton`: `read()` sleeps until PB1 is pressed, then returns `press N`. Supports `poll()`/`select()` and `O_NONBLOCK` (`-EAGAIN`). Each `open()` gets its own "last press seen" counter, so several readers each get every press. `/dev/myled` works as before. Both use one major number (minor 0 = myled, minor 1 = mybutton).
+- Interrupt: `gpiod_to_irq()` gives the button's IRQ; `devm_request_threaded_irq(..., NULL, thread_fn, IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING | IRQF_ONESHOT, ...)`. The threaded handler (bottom half) may sleep: it waits 20 ms (`msleep`), reads the settled value, and on a 0 -> 1 change toggles the LED, increments an atomic press counter and calls `wake_up_interruptible()`. A plain top-half handler runs in interrupt context and may not sleep. `IRQF_ONESHOT` keeps the line masked until the thread returns.
+- Readers sleep in `wait_event_interruptible()` on a wait queue, using no CPU; Ctrl-C (a signal) ends the wait with `-ERESTARTSYS`.
+- `/proc/interrupts` shows the `myled-button` line: about two interrupts per press (press + release, plus bounce), while the debounced press count rises by one.
+- Test: `cat /dev/mybutton`, or `while read p < /dev/mybutton; do echo "Got $p"; done`.
+- This is the pattern a DMA or ADC driver uses: the hardware interrupts when data is ready, the handler wakes the reader, `read()` returns the data.
+
 ### Wi-Fi disruption while the board is on the network (open, watching)
 
 - Symptom: while the board is connected to the Vidéotron router, a video call on another computer (on Wi-Fi) stops. Not an IP conflict (the other computer has a different IP), and only one `Link is Up` in `dmesg` (no link flapping).
@@ -240,8 +248,8 @@ Each module has its own folder and Makefile. The Makefile calls the kernel's own
 
 ## Next steps
 
-1. Point the web page's `control` script at `/dev/myled`.
-2. Load the driver at boot; add the button with an interrupt handler and a blocking `read()`.
+1. Load the driver at boot (install the `.ko` in the image, `modprobe` from an init script) and point the web page's `control` script at `/dev/myled`; retire leddaemon.
+2. Start the FPGA side: install Vivado, build an AXI GPIO/PWM block in the PL, and write a platform driver for it (`compatible`, `reg`, `ioremap`).
 3. Watch the pause counters during the next Wi-Fi disruption.
 4. PHY test on board 2: 5 cold boots with the Ethernet cable plugged in; tally good/bad.
 
@@ -280,3 +288,4 @@ Note: most PL (FPGA) pins only reach the MicroHeaders on the underside, so PL I/
 - Board shell errors look like `-sh: <cmd>: not found`. If a laptop command (`ssh-copy-id`, `curl`, `make`) gives that, you are in the board's SSH session: `exit` first. Prompt `#` = board, `fabio@fabio-UX430UAR:~$` = laptop.
 - A background command in a CGI script must redirect its input and output (`</dev/null >/dev/null 2>&1 &`), or httpd waits for it and the page hangs.
 - Copying over a running program fails with "Text file busy": stop it first (`make push` does this for leddaemon).
+- `poweroff` stops services, syncs and halts Linux, but the MicroZed has no software power switch: the LEDs stay on. Wait for `reboot: System halted` (serial) or for SSH/ping to stop, then unplug.
