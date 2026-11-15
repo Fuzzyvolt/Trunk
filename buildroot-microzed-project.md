@@ -1,6 +1,6 @@
 # Buildroot + QEMU + MicroZed: project summary
 
-Last updated: 2026-11-14 (night)
+Last updated: 2026-11-15
 
 Load this file at the start of a new session to continue the project.
 
@@ -81,7 +81,7 @@ Harmless boot messages:
 
 ## Current state (where we stopped)
 
-As of 2026-11-14 (night): **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and an LED daemon all work.** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Next: the kernel "hello" module (files ready in `microzed/modules/hello/`).
+As of 2026-11-14 (night): **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and an LED daemon all work.** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello` and `myled` (character driver) also work. Next: device tree + platform driver.
 
 1. `~/br-microzed/.config` has: `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), **ethtool**, a root password, `BR2_SYSTEM_DHCP="eth0"`, `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`, and the BusyBox fragment `/home/fabio/mz-busybox.fragment`.
 2. GPIO: `gpiodetect` shows `gpiochip0 [zynq_gpio] (118 lines)` (lines 0-53 = MIO, 54-117 = EMIO). LED D3 and button PB1 are owned by `leddaemon`.
@@ -198,6 +198,20 @@ From the Avnet user guide (section 2.7 and 2.10.3): the PHY reset `ETH_RST_N` is
 
 Conclusion so far: a board-level power-up problem on board 1 (reset timing vs. the 25 MHz oscillator, the U8 translator, or a weak PHY). Not yet done: count the factory image's cold-boot success rate, and run 5 cold boots with the cable plugged in on board 2. If board 2 is always fine, board 1 is faulty (contact Avnet: "88E1512 not responding on MDIO after power-on, intermittent"). Fallback option: a USB-Ethernet adapter (ASIX AX88179 / AX88772) on the USB host port.
 
+### Kernel modules (`microzed/modules/`)
+
+Each module has its own folder and Makefile. The Makefile calls the kernel's own build system (Kbuild) on the tree Buildroot built (`~/br-microzed/build/linux-*`) with `ARCH=arm CROSS_COMPILE=~/br-microzed/host/bin/arm-linux-`, so the module matches the running kernel exactly (its `vermagic` must match, or `insmod` gives "invalid module format"). `make push` copies the `.ko` to `/root/` on the board.
+
+**hello** (works): `module_init`/`module_exit`, `pr_info` with a `pr_fmt` prefix, a module parameter (`insmod hello.ko who=world`, readable in `/sys/module/hello/parameters/who`), `jiffies`/`HZ` timing. `modinfo hello.ko` shows the license, description, parameter and vermagic. Changing init to `return -ENODEV;` makes the load fail, which is how a driver refuses missing hardware (like macb's "Could not attach PHY (-19)", -19 = -ENODEV).
+
+**myled** character driver (works): `/dev/myled` controls LED D3.
+- `echo 1|0|t > /dev/myled` sets on/off/toggle, `cat /dev/myled` prints the state, anything else gives "Invalid argument" (`-EINVAL`).
+- Init order: `alloc_chrdev_region` (major:minor, listed in `/proc/devices`) -> `class_create` (`/sys/class/myled`) -> `device_create` (devtmpfs creates `/dev/myled`) -> GPIO lookup table + `gpiod_get` -> `cdev_add` last, so nobody can open the device before the GPIO is ready. The error path (`goto err_...`) and the exit function undo the steps in reverse order.
+- User data is copied with `get_user` / `simple_read_from_buffer` (never dereference a user pointer). A mutex protects the LED state.
+- The LED pin was hard-coded with a `gpiod_lookup_table` (chip label `zynq_gpio`, line 47). The next step replaces this with a device tree node.
+- Loading it while leddaemon runs fails with "Device or resource busy" (`-16`, -EBUSY): the kernel allows one owner per GPIO line. Stop leddaemon first, start it again after `rmmod myled`.
+- `class_create()` lost its first argument (`THIS_MODULE`) in kernel 6.4, handled with a `LINUX_VERSION_CODE` check.
+
 ### Wi-Fi disruption while the board is on the network (open, watching)
 
 - Symptom: while the board is connected to the Vidéotron router, a video call on another computer (on Wi-Fi) stops. Not an IP conflict (the other computer has a different IP), and only one `Link is Up` in `dmesg` (no link flapping).
@@ -215,12 +229,11 @@ Conclusion so far: a board-level power-up problem on board 1 (reset timing vs. t
 
 ## Next steps
 
-1. **Kernel "hello" module** (files ready): `cd ~/trunk/microzed/modules/hello && make push`, then on the board `insmod /root/hello.ko`, `dmesg | tail`, `rmmod hello`.
-2. Device tree exercise: add a `gpio-leds` node for LED D3, then `echo heartbeat > /sys/class/leds/<name>/trigger`.
-3. Character driver `/dev/myled`, which the web page could use.
+1. **Device tree + platform driver** (in progress): add a `myled` node to the device tree, and a platform driver that the kernel binds to it by its `compatible` string.
+2. Point the web page's `control` script at `/dev/myled`.
+3. Load the driver at boot; add the button with an interrupt handler and a blocking `read()`.
 4. Watch the pause counters during the next Wi-Fi disruption.
 5. PHY test on board 2: 5 cold boots with the Ethernet cable plugged in; tally good/bad.
-6. Optional: temperature logging to CSV with cron; basic auth for the web page.
 
 ## Longer roadmap
 
