@@ -1,5 +1,5 @@
 # Project 02: Zynq PS + our AXI4-Lite register block (axiregs.v) on M_AXI_GP0.
-# Not yet tested in Vivado (written for 2026.1, same flow as 01-ps-only/build.tcl).
+# Tested with Vivado 2026.1 (Basic) on Linux Mint 22: bitstream loads and works on the board.
 #
 # Run on the laptop (after "vivado-env"):
 #   cd ~/microzed-linux/microzed/fpga/02-axiregs && vivado -mode batch -source build.tcl

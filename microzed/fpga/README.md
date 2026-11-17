@@ -8,7 +8,7 @@ outside the repo, in `~/vivado/<name>`, because they are large and full of gener
 | `01-ps-only/build.tcl` | Project 01: block design with only the Zynq PS, builds `.bit` and `.xsa` (tested, works with Vivado 2026.1) |
 | `02-axiregs/axiregs.v` | Project 02: AXI4-Lite slave with 5 registers (reg0, reg1, sum, count, id) |
 | `02-axiregs/tb_axiregs.v` | Testbench for it (Icarus Verilog or Vivado simulator) |
-| `02-axiregs/build.tcl` | Project 02: PS + axiregs on M_AXI_GP0 at `0x43C00000`, builds `.bit`, `axiregs.bin`, `.xsa` |
+| `02-axiregs/build.tcl` | Project 02: PS + axiregs on M_AXI_GP0 at `0x43C00000`, builds `.bit`, `axiregs.bin`, `.xsa` (tested, works on the board) |
 | `02-axiregs/bit2bin.tcl` | Converts `.bit` to the byte-swapped `.bin` the Linux FPGA manager loads (replaces `bootgen`) |
 
 ## One-time setup (laptop)
