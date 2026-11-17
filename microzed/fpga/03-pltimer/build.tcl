@@ -1,5 +1,5 @@
 # Project 03: Zynq PS + axiregs (project 02) + pltimer (timer with interrupt).
-# Not yet run with Vivado: first run is on the laptop.
+# Tested with Vivado 2026.1 (Basic): bitstream loads, interrupts reach Linux.
 #
 # Run on the laptop (after "vivado-env"):
 #   cd ~/microzed-linux/microzed/fpga/03-pltimer && vivado -mode batch -source build.tcl

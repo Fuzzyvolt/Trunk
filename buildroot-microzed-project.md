@@ -1,6 +1,6 @@
 # Buildroot + QEMU + MicroZed: project summary
 
-Last updated: 2026-11-17 (project 02 done)
+Last updated: 2026-11-17 (project 03 done)
 
 Load this file at the start of a new session to continue the project.
 
@@ -81,7 +81,7 @@ Harmless boot messages:
 
 ## Current state (where we stopped)
 
-As of 2026-11-17: **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and our own kernel driver (`myled_irq`, loaded at boot) all work. Project 02 works too: our own AXI register block in the PL, programmed from Linux at boot, with a driver and sysfs files (see "AXI register block" below).** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver), `myled-dt` (device tree platform driver) and `myled-irq` (button interrupt, blocking `/dev/mybutton`) also work.
+As of 2026-11-17: **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and our own kernel driver (`myled_irq`, loaded at boot) all work. Project 02 works too: our own AXI register block in the PL, programmed from Linux at boot, with a driver and sysfs files (see "AXI register block" below). Project 03 works: a timer in the PL interrupts Linux every N µs, `/dev/pltimer` blocks until the next tick (see "PL timer with interrupt" below).** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver), `myled-dt` (device tree platform driver) and `myled-irq` (button interrupt, blocking `/dev/mybutton`) also work.
 
 1. `~/br-microzed/.config` has: `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), **ethtool**, a root password, `BR2_SYSTEM_DHCP="eth0"`, `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`, and the BusyBox fragment `/home/fabio/mz-busybox.fragment`.
 2. GPIO: `gpiodetect` shows `gpiochip0 [zynq_gpio] (118 lines)` (lines 0-53 = MIO, 54-117 = EMIO). LED D3 and button PB1 are owned by the `myled_irq` kernel driver (`/dev/myled`, `/dev/mybutton`), loaded at boot by `/etc/init.d/S30myled`.
@@ -166,6 +166,59 @@ Facts found on the way:
 - The kernel is **linux-xlnx** (`xlnx_rebase_v6.12_LTS`, `xilinx_zynq_defconfig`), U-Boot is **u-boot-xlnx** (Buildroot 2026.02.x `zynq_microzed_defconfig`). The Xilinx kernel has the FPGA manager `firmware` sysfs file; mainline Linux would need device tree overlays instead.
 - U-Boot SPL uses its own `ps7_init` (board/xilinx/zynq/zynq-microzed), not Vivado's: `FPGA0_CLK_CTRL = 0x00100A00` = IO PLL (1000 MHz) / 10 = **100 MHz FCLK0**. PS settings changed in Vivado (clock rates, MIO) do not reach the board unless `boot.bin` is rebuilt from the `.xsa`; only the PL bitstream is used.
 - The Xilinx `zynq-7000.dtsi` has `fclk-enable = <0xf>`, so all four FCLKs are on from boot. That is why `devmem` works before the driver loads.
+
+### PL timer with interrupt (project 03, done 2026-11-17)
+
+```
+                                         +--> axiregs_0  0x43C00000 (project 02, kept)
+CPU --M_AXI_GP0--> AXI Interconnect -----+
+                                         +--> pltimer_0  0x43C10000
+GIC <-- IRQ_F2P[0] = GIC ID 61 <-------------------- irq (level high)
+```
+
+| Offset | Name | Access | Content |
+|---|---|---|---|
+| 0x00 | CTRL | R/W | bit 0 EN (timer runs), bit 1 IE (interrupt output on) |
+| 0x04 | PERIOD | R/W | clock cycles per tick (100000 = 1 ms); 0 = no ticks |
+| 0x08 | STATUS | R/W1C | bit 0 PENDING; write 1 to clear (drops `irq`) |
+| 0x0C | TICKS | R/W | ticks since reset; any write sets it to 0 |
+| 0x10 | COUNT | R | position in the current period |
+| 0x14 | ID | R | `0x4D5A0301` |
+
+Files (all in `microzed/`):
+- `fpga/03-pltimer/pltimer.v`: same AXI4-Lite skeleton as `axiregs.v`, plus the timer. `irq` = PENDING and IE, registered (from a flip-flop, so it cannot glitch). `X_INTERFACE_INFO ... interrupt ... SENSITIVITY LEVEL_HIGH` makes Vivado see it as an interrupt pin.
+- `fpga/03-pltimer/tb_pltimer.v`: testbench (passes in Icarus): level stays high until W1C, IE gating, spacing = PERIOD clocks, PERIOD shrink, PERIOD 0.
+- `fpga/03-pltimer/build.tcl`: project 02's script + `PCW_USE_FABRIC_INTERRUPT 1`, `PCW_IRQ_F2P_INTR 1`, both blocks on one interconnect (second automation call reuses `/ps7_axi_periph`), `connect_bd_net pltimer_0/irq ps7/IRQ_F2P` (one source needs no Concat block). Output `~/vivado/mz03_pltimer/mz03_pltimer.bin`. Worked first time with Vivado 2026.1.
+- `modules/pltimer/pltimer.c`: platform driver, `compatible = "microzed,pltimer"`. `/dev/pltimer` is a **misc device** (`misc_register`: one call gives a `/dev` node, no cdev/class). Everything else is `devm_*` or `devm_add_action_or_reset`, so there is no `remove()`.
+- `board/post-image-dt.sh`: adds `pltimer@43c10000 { compatible; reg = <0x43c10000 0x1000>; interrupt-parent = <&intc>; interrupts = <0 29 4>; clocks = <&clkc 15>; fpga-mgr = <&devcfg>; }` (intc = `/axi/interrupt-controller@f8f01000`).
+- `overlay/etc/init.d/S40pl` **replaces `S40axiregs`**: loads `mz03_pltimer.bin`, then `insmod` axiregs and pltimer. `make overlay`/`make push` remove the old script from the overlay, `target/` and the board. Only one bitstream can be loaded at a time, so axiregs is kept in the project 03 design and the project 02 bitstream is no longer installed.
+- Web page: "PL timer" table (running, period, interrupts, PL ticks, missed, interval stats, `/proc/interrupts` count).
+
+On the board:
+
+```bash
+cat /dev/pltimer                      # "tick 42 pl 42 t 1234.567890" per tick, Ctrl-C to stop
+cd /sys/bus/platform/devices/43c10000.pltimer
+echo 100000 > period_us               # 100 ms (range 20 us .. ~42.9 s); default 1 s (module param period_us)
+echo 0 > enable; echo 1 > enable      # stop / start
+cat ticks pl_ticks missed stats       # write anything to stats to reset it
+grep pltimer /proc/interrupts
+```
+
+Result at 100 ms: `ticks` 331 = `pl_ticks` 331, `missed` 0; `stats`: 170 intervals, min 99.996961 ms, avg 99.999979 ms, max 100.003369 ms, so **about ±3.5 µs jitter** at the handler. `/proc/interrupts`: ` 47: 331 0 GIC-0 61 Level pltimer`, so Linux IRQ 47, GIC ID 61, level, all on CPU0 (default affinity).
+
+**Interrupt numbering:**
+- GIC IDs: 0-15 SGI (CPU to CPU), 16-31 PPI (per-CPU, like the private timers), 32+ SPI (shared, peripherals).
+- Device tree `interrupts = <type number flags>`: type 0 = SPI, number counted from 32 (so 29 = ID 61), flags 1 = rising edge, 4 = level high.
+- Zynq: IRQ_F2P[0..7] = IDs 61-68, IRQ_F2P[8..15] = IDs 84-91.
+- Linux uses its own IRQ numbers (47 here), which `platform_get_irq()` returns. `/proc/interrupts` shows both: Linux number first, then `GIC-0 61`.
+
+**Top half vs threaded handler:**
+- myled-irq used a threaded handler because it had to sleep (`msleep` for debounce, mutex, GPIO calls that may sleep).
+- pltimer only does `readl`/`writel`, a few additions and `wake_up_interruptible()`, all allowed in interrupt context, so a plain top half (`devm_request_irq`) is enough and has the least latency. Shared state (counters, timestamps, stats) uses a **spinlock**: `spin_lock` in the handler, `spin_lock_irq` in `read()`/sysfs (interrupts off while holding it, or the handler could interrupt the holder on the same CPU and deadlock).
+- The handler **must clear PENDING**: it is a level interrupt, so otherwise the GIC calls it again as soon as it returns and the board locks up. After the clear (`writel`) it reads a register back: writes to a device can be "posted" (the CPU moves on before they arrive), and the read makes sure the line is low before the handler returns. If STATUS is 0 the handler returns `IRQ_NONE` (not ours).
+- Missed ticks: the PL counts every tick in TICKS; if two arrive between two interrupts they merge into one PENDING, and the handler adds `delta - 1` to `missed`. A slow *reader* is different: it sees the tick number jump.
+- 64-bit division on the 32-bit ARM must use `div_u64()` / `div_u64_rem()` (`/` on a `u64` fails to link: `__aeabi_uldivmod`).
 
 ### Repo workflow (`~/microzed-linux/microzed`)
 
@@ -340,12 +393,14 @@ The next projects are written as self-contained briefs in `microzed/projects/` (
 
 1. ~~`01-vivado-setup.md`: install Vivado, first bitstream.~~ Done 2026-11-15.
 2. ~~`02-axi-registers.md`: custom AXI register block, load the bitstream from Linux, driver.~~ Done 2026-11-17.
-3. `03-pl-timer-interrupt.md`: PL timer interrupt, blocking read. **In progress** (files written 2026-11-17, not yet built or tested on the laptop/board).
+3. ~~`03-pl-timer-interrupt.md`: PL timer interrupt, blocking read.~~ Done 2026-11-17.
 4. `04-axi-dma-loopback.md`: AXI DMA loopback with the DMA engine framework.
 5. `05-dma-data-stream.md`: simulated ADC stream to a live web chart.
 6. `06-buildroot-package.md` (optional, any time): build our modules as Buildroot packages, `modprobe`.
 
-Project 03 status (2026-11-17): files written, not yet run on the laptop or board. `fpga/03-pltimer/` (`pltimer.v`, testbench passes in Icarus, `build.tcl` with axiregs at `0x43C00000` + pltimer at `0x43C10000`, `irq` -> `IRQ_F2P[0]`), `modules/pltimer/` (`/dev/pltimer`, sysfs; compile-checked against x86 6.17 headers only), `pltimer@43c10000` node in `post-image-dt.sh` (tested on a mock `.dtb`), `S40pl` replaces `S40axiregs` (loads `mz03_pltimer.bin`, then both drivers), web page table. Next: Vivado build, `make flash`, test against the brief's "Done when".
+Next session: start `04-axi-dma-loopback.md`. Add the AXI DMA to the project 03 design (keep axiregs and pltimer, so `S40pl` keeps working; the DMA's two interrupts plus pltimer need an xlconcat block on IRQ_F2P: pltimer stays on input 0 = ID 61, DMA on inputs 1-2 = IDs 62-63, DT SPI 30-31). Change `FW` in `S40pl` and `FPGA_BIN` in the Makefile to the new bitstream.
+
+Not yet tried in project 03 (optional): stress test at `period_us` 50 (`missed`, CPU load in `top`), and user-space jitter (`head -20 /dev/pltimer | awk ...`, compare with the driver's ±3.5 µs).
 
 Still open on the side: watch the pause counters during the next Wi-Fi disruption; PHY test on board 2 (5 cold boots with the cable plugged in).
 
@@ -394,3 +449,6 @@ Note: most PL (FPGA) pins only reach the MicroHeaders on the underside, so PL I/
 - The Zynq FPGA manager wants a byte-swapped `.bin`, not the `.bit` ("Invalid bitstream, could not find a sync word" otherwise). `bit2bin.tcl` makes it without Vitis.
 - Write custom PL blocks as plain Verilog + module reference in the block design; simulate them first (Icarus `iverilog`, or Vivado's simulator). Much faster than a bitstream build to find AXI handshake bugs.
 - A new device tree node needs `make flash` (post-image script); a new module or script alone only needs `make push`.
+- A level interrupt from the PL must be cleared in the device (W1C) by the handler, followed by a read-back, or it fires forever.
+- Device tree SPI number = GIC ID - 32. Zynq IRQ_F2P[0] = ID 61 = `<0 29 4>`.
+- When a new bitstream replaces the old one, keep the old blocks in the new design (only one bitstream at a time) and keep their addresses, so the old drivers still work.

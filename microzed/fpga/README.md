@@ -12,7 +12,7 @@ outside the repo, in `~/vivado/<name>`, because they are large and full of gener
 | `02-axiregs/bit2bin.tcl` | Converts `.bit` to the byte-swapped `.bin` the Linux FPGA manager loads (replaces `bootgen`) |
 | `03-pltimer/pltimer.v` | Project 03: AXI4-Lite timer with a level interrupt output |
 | `03-pltimer/tb_pltimer.v` | Testbench for it (passes in Icarus Verilog) |
-| `03-pltimer/build.tcl` | Project 03: PS + axiregs (`0x43C00000`) + pltimer (`0x43C10000`), `irq` -> `IRQ_F2P[0]`; builds `mz03_pltimer.bin` (not yet run in Vivado) |
+| `03-pltimer/build.tcl` | Project 03: PS + axiregs (`0x43C00000`) + pltimer (`0x43C10000`), `irq` -> `IRQ_F2P[0]`; builds `mz03_pltimer.bin` (tested, works on the board) |
 
 ## One-time setup (laptop)
 
