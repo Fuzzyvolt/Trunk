@@ -1,0 +1,74 @@
+#!/bin/sh
+# Program the PL, then load the drivers for the blocks in it.
+#
+# Project 03 bitstream: axiregs (project 02, 0x43C00000) + pltimer (0x43C10000).
+# It replaces S40axiregs: only one bitstream can be loaded at a time.
+#
+# Order matters: a PL address read with no logic behind it hangs the CPU,
+# so the bitstream goes in first, the drivers second. Stop unloads the
+# drivers but leaves the PL programmed.
+#
+# Bitstream loading uses the Xilinx kernel's FPGA manager sysfs files:
+#   flags    0 = full bitstream (1 would be partial reconfiguration)
+#   firmware file name; the kernel reads it from /lib/firmware/ and programs the PL
+#   state    "operating" once the PL runs
+# (fpgautil -b /lib/firmware/mz03_pltimer.bin does the same.)
+
+FW=mz03_pltimer.bin
+MGR=/sys/class/fpga_manager/fpga0
+MODS="axiregs pltimer"            # loaded in this order, unloaded in reverse
+
+loaded() { grep -q "^$1 " /proc/modules; }
+
+load_pl() {
+  printf "Programming PL with %s: " $FW
+  if [ ! -f /lib/firmware/$FW ]; then
+    echo "FAIL (/lib/firmware/$FW missing)"
+    return 1
+  fi
+  echo 0 > $MGR/flags
+  if echo $FW > $MGR/firmware && [ "$(cat $MGR/state)" = "operating" ]; then
+    echo "OK"
+  else
+    echo "FAIL (state: $(cat $MGR/state), see dmesg)"
+    return 1
+  fi
+}
+
+case "$1" in
+  start)
+    # Drivers already loaded = PL already programmed: reprogramming it under
+    # a running driver would pull the hardware away from it.
+    for m in $MODS; do
+      if loaded $m; then
+        echo "PL drivers already loaded (stop first)"
+        exit 0
+      fi
+    done
+    load_pl || exit 1
+    for m in $MODS; do
+      printf "Loading %s: " $m
+      if insmod /lib/modules/$m/$m.ko; then echo "OK"; else echo "FAIL (see dmesg)"; fi
+    done
+    ;;
+  stop)
+    for m in pltimer axiregs; do
+      printf "Unloading %s: " $m
+      if ! loaded $m; then
+        echo "not loaded"
+      elif rmmod $m; then
+        echo "OK"
+      else
+        echo "FAIL (in use? close /dev/pltimer readers)"
+      fi
+    done
+    ;;
+  restart)
+    $0 stop
+    $0 start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
+esac

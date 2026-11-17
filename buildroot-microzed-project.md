@@ -340,12 +340,12 @@ The next projects are written as self-contained briefs in `microzed/projects/` (
 
 1. ~~`01-vivado-setup.md`: install Vivado, first bitstream.~~ Done 2026-11-15.
 2. ~~`02-axi-registers.md`: custom AXI register block, load the bitstream from Linux, driver.~~ Done 2026-11-17.
-3. `03-pl-timer-interrupt.md`: PL timer interrupt, blocking read.
+3. `03-pl-timer-interrupt.md`: PL timer interrupt, blocking read. **In progress** (files written 2026-11-17, not yet built or tested on the laptop/board).
 4. `04-axi-dma-loopback.md`: AXI DMA loopback with the DMA engine framework.
 5. `05-dma-data-stream.md`: simulated ADC stream to a live web chart.
 6. `06-buildroot-package.md` (optional, any time): build our modules as Buildroot packages, `modprobe`.
 
-Next session: start `03-pl-timer-interrupt.md`. It can copy `fpga/02-axiregs/` (module reference, build script, bit2bin), the driver's FPGA-state check and `S40axiregs`; it adds `PCW_USE_FABRIC_INTERRUPT` / `IRQ_F2P` and an `interrupts` property in the node. Only one bitstream can be loaded at a time, so project 03 should either keep the axiregs block in its design or replace `S40axiregs`.
+Project 03 status (2026-11-17): files written, not yet run on the laptop or board. `fpga/03-pltimer/` (`pltimer.v`, testbench passes in Icarus, `build.tcl` with axiregs at `0x43C00000` + pltimer at `0x43C10000`, `irq` -> `IRQ_F2P[0]`), `modules/pltimer/` (`/dev/pltimer`, sysfs; compile-checked against x86 6.17 headers only), `pltimer@43c10000` node in `post-image-dt.sh` (tested on a mock `.dtb`), `S40pl` replaces `S40axiregs` (loads `mz03_pltimer.bin`, then both drivers), web page table. Next: Vivado build, `make flash`, test against the brief's "Done when".
 
 Still open on the side: watch the pause counters during the next Wi-Fi disruption; PHY test on board 2 (5 cold boots with the cable plugged in).
 
