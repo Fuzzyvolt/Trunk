@@ -1,6 +1,6 @@
 # Buildroot + QEMU + MicroZed: project summary
 
-Last updated: 2026-11-15 (night, project 01 done)
+Last updated: 2026-11-17 (project 02 done)
 
 Load this file at the start of a new session to continue the project.
 
@@ -81,7 +81,7 @@ Harmless boot messages:
 
 ## Current state (where we stopped)
 
-As of 2026-11-15: **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and our own kernel driver (`myled_irq`, loaded at boot) all work.** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver), `myled-dt` (device tree platform driver) and `myled-irq` (button interrupt, blocking `/dev/mybutton`) also work.
+As of 2026-11-17: **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and our own kernel driver (`myled_irq`, loaded at boot) all work. Project 02 works too: our own AXI register block in the PL, programmed from Linux at boot, with a driver and sysfs files (see "AXI register block" below).** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver), `myled-dt` (device tree platform driver) and `myled-irq` (button interrupt, blocking `/dev/mybutton`) also work.
 
 1. `~/br-microzed/.config` has: `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), **ethtool**, a root password, `BR2_SYSTEM_DHCP="eth0"`, `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`, and the BusyBox fragment `/home/fabio/mz-busybox.fragment`.
 2. GPIO: `gpiodetect` shows `gpiochip0 [zynq_gpio] (118 lines)` (lines 0-53 = MIO, 54-117 = EMIO). LED D3 and button PB1 are owned by the `myled_irq` kernel driver (`/dev/myled`, `/dev/mybutton`), loaded at boot by `/etc/init.d/S30myled`.
@@ -101,7 +101,71 @@ As of 2026-11-15: **GPIO, SSH (key login), cross-compiled programs, rootfs overl
   - `~/vivado/mz01_ps_only`: the same design built by `microzed/fpga/01-ps-only/build.tcl` (`vivado -mode batch -source build.tcl`), works. Writes `mz01_ps_only.bit` and `.xsa` in the project folder.
 - PS settings from the board preset (needed for project 02): FCLK_CLK0 = 100 MHz, M_AXI_GP0 off, fabric interrupts off.
 - Flow: block design -> HDL wrapper -> Generate Bitstream (runs synthesis and implementation itself if needed) -> File -> Export -> Export Hardware, "Include bitstream" (`.xsa`). Export fails with `[Common 17-69] Unable to get BIT file` if the bitstream run has not finished yet or is out of date.
-- Nothing loaded on the board yet (project 02).
+- Project 02 (below) loads its bitstream from Linux; nothing is in QSPI or `boot.bin`.
+
+### AXI register block (project 02, done 2026-11-17)
+
+```
+CPU (PS) --M_AXI_GP0 (AXI3)--> AXI Interconnect --(AXI4-Lite)--> axiregs (PL)
+                               (protocol converter)              0x43C00000, 4 KB
+FCLK_CLK0 (100 MHz) clocks the PL side; proc_sys_reset makes the reset.
+```
+
+| Offset | Name | Access | Content |
+|---|---|---|---|
+| 0x00 | reg0 | R/W | scratch |
+| 0x04 | reg1 | R/W | scratch |
+| 0x08 | sum | R | reg0 + reg1, computed in the PL |
+| 0x0C | count | R | +1 per 100 MHz clock (wraps every ~43 s) |
+| 0x10 | id | R | `0x4D5A0201` |
+
+Files (all in `microzed/`):
+- `fpga/02-axiregs/axiregs.v`: hand-written AXI4-Lite slave. Added to the block design as a **module reference** (`create_bd_cell -type module -reference axiregs`), not with "Create and Package New IP": one readable file in git, no generated boilerplate. The `s_axi_*` port names make Vivado see them as one AXI interface; `X_INTERFACE_*` attributes tie the clock and reset to it.
+- `fpga/02-axiregs/tb_axiregs.v`: testbench (the AXI master role). `iverilog -o /tmp/tb tb_axiregs.v axiregs.v && vvp /tmp/tb` prints PASS lines.
+- `fpga/02-axiregs/build.tcl`: PS with board preset + `PCW_USE_M_AXI_GP0 1`, axiregs, connection automation (AXI Interconnect + Processor System Reset), address `0x43C00000`/4K, bitstream, `axiregs.bin`, `.xsa`. Works with Vivado 2026.1: `cd ~/microzed-linux/microzed/fpga/02-axiregs && vivado -mode batch -source build.tcl`. Output in `~/vivado/mz02_axiregs/`.
+- `fpga/02-axiregs/bit2bin.tcl`: `.bit` -> `.bin` for the FPGA manager. A `.bit` is a text header (design, part, date) + config data; the PCAP wants only the data with each 32-bit word byte-swapped, so the sync word `AA 99 55 66` reads `66 55 99 AA`. Replaces `bootgen -process_bitstream bin`, which needs Vitis (not installed).
+- `modules/axiregs/axiregs.c`: platform driver, `compatible = "microzed,axiregs"`.
+- `board/post-image-dt.sh`: now also adds `axiregs@43c00000 { compatible; reg = <0x43c00000 0x1000>; clocks = <&clkc 15>; fpga-mgr = <&devcfg>; }`. The script has a `phandle()` helper (clkc and devcfg already have phandles, the GPIO controller gets one).
+- `overlay/etc/init.d/S40axiregs`: programs the PL, then `insmod`s the driver. `make overlay`/`make push` install `/lib/firmware/axiregs.bin` (from `~/vivado/mz02_axiregs/`, skipped with a warning if missing) and `/lib/modules/axiregs/axiregs.ko`.
+- Web page: "PL registers" table (id, reg0, reg1, sum, count).
+
+Loading the bitstream (Xilinx kernel FPGA manager, sysfs):
+
+```bash
+echo 0 > /sys/class/fpga_manager/fpga0/flags             # 0 = full bitstream
+echo axiregs.bin > /sys/class/fpga_manager/fpga0/firmware  # read from /lib/firmware/
+cat /sys/class/fpga_manager/fpga0/state                  # "operating"; blue DONE LED on
+```
+
+`fpgautil -b /lib/firmware/axiregs.bin` (in the Buildroot defconfig) does the same. The kernel driver (`zynq-fpga`) also handles the PS-PL level shifters and the PL resets during the load.
+
+Test with BusyBox `devmem` (only once `state` is `operating`):
+
+```bash
+devmem 0x43C00010            # 0x4D5A0201
+devmem 0x43C00000 32 5       # reg0 = 5
+devmem 0x43C00004 32 7       # reg1 = 7
+devmem 0x43C00008            # 0x0000000C
+```
+
+Driver (after `make flash`):
+
+```bash
+dmesg | grep axiregs         # "axiregs at ..., ID 0x4d5a0201, PL clock 100000000 Hz"
+cd /sys/bus/platform/devices/43c00000.axiregs
+echo 5 > reg0; echo 0x10 > reg1; cat sum   # 21
+cat count; sleep 1; cat count              # +~100 million
+```
+
+How the driver works:
+- `probe()` first checks the PL is programmed: `of_parse_phandle(np, "fpga-mgr")` -> `of_fpga_mgr_get()` -> `mgr->state == FPGA_MGR_STATE_OPERATING`, else it fails with "load the bitstream first" instead of hanging the board. Then it reads `id` and refuses a wrong bitstream.
+- `devm_clk_get_enabled()` claims FCLK_CLK0 (unclaimed clocks can be turned off by the kernel); `devm_platform_get_and_ioremap_resource()` maps the `reg` range; `readl()`/`writel()` access it.
+- sysfs files come from `DEVICE_ATTR_RW/RO` + `ATTRIBUTE_GROUPS` in `.dev_groups`; the driver core creates them after `probe()` succeeds. `kstrtou32(buf, 0, ...)` accepts decimal or `0x` hex. Values print in decimal, `id` in hex.
+
+Facts found on the way:
+- The kernel is **linux-xlnx** (`xlnx_rebase_v6.12_LTS`, `xilinx_zynq_defconfig`), U-Boot is **u-boot-xlnx** (Buildroot 2026.02.x `zynq_microzed_defconfig`). The Xilinx kernel has the FPGA manager `firmware` sysfs file; mainline Linux would need device tree overlays instead.
+- U-Boot SPL uses its own `ps7_init` (board/xilinx/zynq/zynq-microzed), not Vivado's: `FPGA0_CLK_CTRL = 0x00100A00` = IO PLL (1000 MHz) / 10 = **100 MHz FCLK0**. PS settings changed in Vivado (clock rates, MIO) do not reach the board unless `boot.bin` is rebuilt from the `.xsa`; only the PL bitstream is used.
+- The Xilinx `zynq-7000.dtsi` has `fclk-enable = <0xf>`, so all four FCLKs are on from boot. That is why `devmem` works before the driver loads.
 
 ### Repo workflow (`~/microzed-linux/microzed`)
 
@@ -275,11 +339,13 @@ Each module has its own folder and Makefile. The Makefile calls the kernel's own
 The next projects are written as self-contained briefs in `microzed/projects/` (index: `microzed/projects/README.md`), one per session. Start a new session with, for example: "Read `buildroot-microzed-project.md` and `microzed/projects/02-axi-registers.md`, then let's do it." End each session with "update the md".
 
 1. ~~`01-vivado-setup.md`: install Vivado, first bitstream.~~ Done 2026-11-15.
-2. `02-axi-registers.md`: custom AXI register block, load the bitstream from Linux, driver.
+2. ~~`02-axi-registers.md`: custom AXI register block, load the bitstream from Linux, driver.~~ Done 2026-11-17.
 3. `03-pl-timer-interrupt.md`: PL timer interrupt, blocking read.
 4. `04-axi-dma-loopback.md`: AXI DMA loopback with the DMA engine framework.
 5. `05-dma-data-stream.md`: simulated ADC stream to a live web chart.
 6. `06-buildroot-package.md` (optional, any time): build our modules as Buildroot packages, `modprobe`.
+
+Next session: start `03-pl-timer-interrupt.md`. It can copy `fpga/02-axiregs/` (module reference, build script, bit2bin), the driver's FPGA-state check and `S40axiregs`; it adds `PCW_USE_FABRIC_INTERRUPT` / `IRQ_F2P` and an `interrupts` property in the node. Only one bitstream can be loaded at a time, so project 03 should either keep the axiregs block in its design or replace `S40axiregs`.
 
 Still open on the side: watch the pause counters during the next Wi-Fi disruption; PHY test on board 2 (5 cold boots with the cable plugged in).
 
@@ -324,3 +390,7 @@ Note: most PL (FPGA) pins only reach the MicroHeaders on the underside, so PL I/
 - AMD's `installLibs.sh` ships with Windows line endings (`sudo: unable to execute ...: No such file or directory`, `head -1 | cat -A` shows `^M$`). Run a cleaned copy: `tr -d '\r' < installLibs.sh > /tmp/installLibs.sh`, then `sudo bash /tmp/installLibs.sh`.
 - Vivado Tcl does not expand `~` in `set_param board.repoPaths [list ...]`; use the full path. Test with `get_board_parts *microzed*` in the Tcl console.
 - `vivado: command not found` in a new terminal: run `vivado-env` (or source `settings64.sh`) first.
+- **Never read a PL address (`devmem`, driver) before the bitstream is loaded**: nothing answers on the AXI bus and the CPU hangs until a power cycle. Check `cat /sys/class/fpga_manager/fpga0/state` = `operating` first. The driver checks this itself.
+- The Zynq FPGA manager wants a byte-swapped `.bin`, not the `.bit` ("Invalid bitstream, could not find a sync word" otherwise). `bit2bin.tcl` makes it without Vitis.
+- Write custom PL blocks as plain Verilog + module reference in the block design; simulate them first (Icarus `iverilog`, or Vivado's simulator). Much faster than a bitstream build to find AXI handshake bugs.
+- A new device tree node needs `make flash` (post-image script); a new module or script alone only needs `make push`.

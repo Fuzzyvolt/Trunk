@@ -25,6 +25,18 @@ else
   LED="unknown (myled_irq driver not loaded)"
 fi
 
+# PL registers from the axiregs driver (project 02), if it is bound.
+AX=/sys/bus/platform/drivers/axiregs/43c00000.axiregs
+if [ -r $AX/id ]; then
+  PL="<tr><td>ID</td><td>$(cat $AX/id)</td></tr>
+<tr><td>reg0</td><td>$(cat $AX/reg0)</td></tr>
+<tr><td>reg1</td><td>$(cat $AX/reg1)</td></tr>
+<tr><td>sum (computed in the PL)</td><td>$(cat $AX/sum)</td></tr>
+<tr><td>count (100 MHz)</td><td>$(cat $AX/count)</td></tr>"
+else
+  PL="<tr><td colspan=2>axiregs driver not loaded</td></tr>"
+fi
+
 cat << HTML
 <!doctype html><html><head>
 <meta name="viewport" content="width=device-width">
@@ -45,6 +57,10 @@ done)
 <tr><td>Memory</td><td>$MEM</td></tr>
 <tr><td>IP</td><td>$IP</td></tr>
 <tr><td>Kernel</td><td>$(uname -r)</td></tr>
+</table>
+<h3>PL registers (0x43C00000)</h3>
+<table>
+$PL
 </table>
 <p>LED D3: <b>$LED</b></p>
 <form method="post" action="/cgi-bin/control">
