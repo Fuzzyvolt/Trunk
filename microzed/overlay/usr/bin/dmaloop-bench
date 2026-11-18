@@ -1,0 +1,23 @@
+#!/bin/sh
+# AXI DMA loopback throughput for several transfer sizes (project 04).
+# Usage: dmaloop-bench [transfers per size, default 100]
+#
+# MB/s = bytes sent / time from "start" to "both DMA interrupts handled".
+# The same bytes also come back, so the DDR sees twice that traffic.
+
+D=/sys/bus/platform/devices/dmaloop
+N=${1:-100}
+[ -w $D/run ] || { echo "dmaloop driver not bound (see /etc/init.d/S40pl)"; exit 1; }
+
+printf "%9s %6s %9s %9s %9s %7s\n" bytes count avg_us min_us max_us MB/s
+for s in 1024 4096 16384 65536 262144 1048576 4194304; do
+  echo $s > $D/size
+  if ! echo $N > $D/run; then
+    cat $D/result
+    exit 1
+  fi
+  awk '{ for (i = 2; i <= NF; i++) { split($i, kv, "="); v[kv[1]] = kv[2] }
+         printf "%9s %6s %9s %9s %9s %7s\n", v["size"], v["count"], v["avg_us"],
+                v["min_us"], v["max_us"], v["MBps"] }' $D/result
+done
+echo 65536 > $D/size

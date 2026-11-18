@@ -1,0 +1,11 @@
+# Kernel config fragment for the MicroZed (linux-xlnx, xilinx_zynq_defconfig).
+# Buildroot applies it on top of the defconfig:
+#   make menuconfig -> Kernel -> "Additional configuration fragment files"
+#   = /home/fabio/microzed-linux/microzed/configs/linux.fragment
+# then: make linux-reconfigure && make
+#
+# Project 04: the Xilinx AXI DMA driver as a module instead of built in (=y).
+# Built in, it binds at boot (the device tree has the DMA node), reads the DMA
+# registers before the PL is programmed, and the CPU hangs. As a module,
+# /etc/init.d/S40pl loads it after the bitstream (modprobe xilinx_dma).
+CONFIG_XILINX_DMA=m

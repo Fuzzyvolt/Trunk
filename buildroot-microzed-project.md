@@ -1,6 +1,6 @@
 # Buildroot + QEMU + MicroZed: project summary
 
-Last updated: 2026-11-17 (project 03 done)
+Last updated: 2026-11-18 (project 04 done)
 
 Load this file at the start of a new session to continue the project.
 
@@ -81,9 +81,9 @@ Harmless boot messages:
 
 ## Current state (where we stopped)
 
-As of 2026-11-17: **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and our own kernel driver (`myled_irq`, loaded at boot) all work. Project 02 works too: our own AXI register block in the PL, programmed from Linux at boot, with a driver and sysfs files (see "AXI register block" below). Project 03 works: a timer in the PL interrupts Linux every N µs, `/dev/pltimer` blocks until the next tick (see "PL timer with interrupt" below).** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver), `myled-dt` (device tree platform driver) and `myled-irq` (button interrupt, blocking `/dev/mybutton`) also work.
+As of 2026-11-18: **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and our own kernel driver (`myled_irq`, loaded at boot) all work. Project 02 works too: our own AXI register block in the PL, programmed from Linux at boot, with a driver and sysfs files (see "AXI register block" below). Project 03 works: a timer in the PL interrupts Linux every N µs, `/dev/pltimer` blocks until the next tick (see "PL timer with interrupt" below). Project 04 works: an AXI DMA loops buffers DDR -> PL FIFO -> DDR through the kernel's DMA engine framework, up to 393 MB/s (see "AXI DMA loopback" below).** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver), `myled-dt` (device tree platform driver) and `myled-irq` (button interrupt, blocking `/dev/mybutton`) also work.
 
-1. `~/br-microzed/.config` has: `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), **ethtool**, a root password, `BR2_SYSTEM_DHCP="eth0"`, `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`, and the BusyBox fragment `/home/fabio/mz-busybox.fragment`.
+1. `~/br-microzed/.config` has: kernel config fragment `/home/fabio/microzed-linux/microzed/configs/linux.fragment` (`CONFIG_XILINX_DMA=m`), `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), **ethtool**, a root password, `BR2_SYSTEM_DHCP="eth0"`, `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`, and the BusyBox fragment `/home/fabio/mz-busybox.fragment`.
 2. GPIO: `gpiodetect` shows `gpiochip0 [zynq_gpio] (118 lines)` (lines 0-53 = MIO, 54-117 = EMIO). LED D3 and button PB1 are owned by the `myled_irq` kernel driver (`/dev/myled`, `/dev/mybutton`), loaded at boot by `/etc/init.d/S30myled`.
 3. Network: fixed MAC `02:0a:35:00:00:01`, so the board gets **10.0.0.134**. `ssh root@10.0.0.134` logs in with a key (no password).
 4. Web page: `http://10.0.0.134` (redirects to `/cgi-bin/status`): die temperature, all XADC voltage rails, uptime, load, memory, IP, kernel, LED state, and buttons (LED on/off/toggle, power off). Refreshes every 5 s.
@@ -219,6 +219,71 @@ Result at 100 ms: `ticks` 331 = `pl_ticks` 331, `missed` 0; `stats`: 170 interva
 - The handler **must clear PENDING**: it is a level interrupt, so otherwise the GIC calls it again as soon as it returns and the board locks up. After the clear (`writel`) it reads a register back: writes to a device can be "posted" (the CPU moves on before they arrive), and the read makes sure the line is low before the handler returns. If STATUS is 0 the handler returns `IRQ_NONE` (not ours).
 - Missed ticks: the PL counts every tick in TICKS; if two arrive between two interrupts they merge into one PENDING, and the handler adds `delta - 1` to `missed`. A slow *reader* is different: it sees the tick number jump.
 - 64-bit division on the 32-bit ARM must use `div_u64()` / `div_u64_rem()` (`/` on a `u64` fails to link: `__aeabi_uldivmod`).
+
+### AXI DMA loopback (project 04, done 2026-11-18)
+
+```
+                 M_AXI_GP0
+CPU (PS) -----------------> axi_gp0_ic --+--> axiregs_0       0x43C00000 (ID now 0x4D5A0401)
+                                         +--> pltimer_0       0x43C10000 (project 03, unchanged)
+                                         +--> axi_dma_0 regs  0x40400000, 64 KB
+
+DDR <-- S_AXI_HP0 <-- axi_hp0_ic <--+-- axi_dma_0 M_AXI_MM2S (reads tx_buf)
+                                    +-- axi_dma_0 M_AXI_S2MM (writes rx_buf)
+
+axi_dma_0 M_AXIS_MM2S --> axis_fifo (1024 x 32 bit) --> S_AXIS_S2MM
+
+irq_concat: In0 pltimer -> IRQ_F2P[0] = GIC 61 (DT <0 29 4>)
+            In1 mm2s_introut -> IRQ_F2P[1] = GIC 62 (<0 30 4>)
+            In2 s2mm_introut -> IRQ_F2P[2] = GIC 63 (<0 31 4>)
+```
+
+AXI DMA settings: simple mode (no scatter-gather), 32-bit memory and stream data, 16-beat bursts, buffer length register **23 bits** (Vivado default is 14 = 16 KB max per transfer; the DT property `xlnx,sg-length-width = <23>` must match). HP0 left at 64 bits (its reset value, so U-Boot's `ps7_init` needs nothing); the interconnect converts 32 -> 64. Both DMA address windows cover all 1 GB of DDR (a smaller window makes the interconnect reject buffers above it).
+
+Files (all in `microzed/`):
+- `fpga/04-dma-loopback/build.tcl`: the project 03 design + DMA, **wired by hand** (no connection automation: one line per wire, fixed cell names). Uses `axiregs.v` and `pltimer.v` from their folders; sets the axiregs `ID` parameter to `0x4D5A0401`; checks after validation that the FIFO passes TLAST. Output `~/vivado/mz04_dma/mz04_dma.bin`. Worked first time with Vivado 2026.1.
+- `configs/linux.fragment`: `CONFIG_XILINX_DMA=m`. Set in Buildroot menuconfig -> Kernel -> "Additional configuration fragment files", applied with `make linux-reconfigure && make`.
+- `board/post-image-dt.sh`: adds `dma@40400000` (two channel subnodes, `xlnx,axi-dma-mm2s-channel` / `-s2mm-channel`, `xlnx,datawidth = <32>`, clocks named `s_axi_lite_aclk`, `m_axi_mm2s_aclk`, `m_axi_s2mm_aclk`) and `dmaloop { compatible = "microzed,dmaloop"; dmas = <&axi_dma 0>, <&axi_dma 1>; dma-names = "tx", "rx"; }`. Writes both with `status = "disabled"` and a warning unless the kernel `.config` has `CONFIG_XILINX_DMA=m`.
+- `modules/dmaloop/dmaloop.c`: DMA engine client (see below). sysfs in `/sys/bus/platform/devices/dmaloop/`: `size` (4 B .. 4 MiB, multiple of 4, default 64 KiB), `run` (write N: N loopbacks, each checked; blocks until done), `result` (`ok size= count= avg_us= min_us= max_us= MBps=` or `FAIL ...`).
+- `overlay/usr/bin/dmaloop-bench`: table for 1 KB .. 4 MB.
+- `overlay/etc/init.d/S40pl`: loads `/lib/firmware/pl.bin`, insmod axiregs + pltimer, then **only if axiregs `id` is `0x4d5a04xx`**: `modprobe xilinx_dma`, insmod dmaloop. Stop unloads in reverse order.
+- `Makefile`: `FPGA_BIN` = `mz04_dma.bin` if built, else `mz03_pltimer.bin`, installed as **`/lib/firmware/pl.bin`** (old `axiregs.bin`/`mz03_pltimer.bin` removed from overlay, `target/` and board). `make` also builds `dmaloop.ko`.
+- `modules/axiregs/axiregs.c`: accepts any ID `0x4d5aXXXX` and prints the project number.
+- Web page: "DMA loopback, last run" line.
+
+**Why `CONFIG_XILINX_DMA=m`:** Xilinx's `xilinx_zynq_defconfig` has it `=y`. Built in, the driver binds at boot as soon as the DT node exists, enables clocks and reads the DMA status register (`DMASR`, to see whether SG is included) and resets the channels, all before the PL is programmed, so the CPU hangs on the AXI read. As a module, `S40pl` loads it after the bitstream. Buildroot runs `depmod` for kernel modules, so `modprobe xilinx_dma` works (unlike our own modules, which need `insmod` with a path).
+
+How the client driver works (DMA engine framework):
+- `dma_request_chan(dev, "tx")` / `"rx"`: looks the name up in `dma-names`, follows the matching `dmas` entry to the DMA node, asks its driver (`xilinx_dma`, `of_dma_xilinx_xlate`) for channel N. In xilinx_dma the MM2S channel is id 0 and S2MM id 1, whatever the subnode order. If xilinx_dma is not loaded: `-EPROBE_DEFER`. Holding the channels pins `xilinx_dma` (`rmmod xilinx_dma` fails while dmaloop is loaded).
+- Buffers: `dma_alloc_coherent()` on **the DMA controller's device** (`chan->device->dev`, the one that does the memory access), 2 x 4 MiB from CMA (default 16 MiB). The HP port bypasses the CPU caches; coherent memory is uncached for the CPU, so both sides see the same data. The alternative is `kmalloc` + `dma_map_single()` + sync calls.
+- Per transfer: `dmaengine_prep_slave_single()` (descriptor: buffer, length, direction `DMA_DEV_TO_MEM` / `DMA_MEM_TO_DEV`) -> set `callback_result` -> `dmaengine_submit()` (queues only) -> `dma_async_issue_pending()` (starts). **RX (S2MM) first**, then TX. The callback runs in xilinx_dma's tasklet after the DMA interrupt and calls `complete()`; the client sleeps in `wait_for_completion_timeout()` (1 s, then `dmaengine_terminate_sync()`). `result->result` reports DMA errors.
+- Check: a pattern that changes per word and per transfer (`seed ^ (w * 0x9e3779b1)`), rx cleared before each transfer, `memcmp` after. Only the DMA part is timed (`ktime_get()`).
+- In simple mode xilinx_dma programs one buffer per descriptor (address + length register `BTT`, writing BTT starts it), so the maximum per transfer is the length register width.
+
+Results (board 2, 2026-11-18), boot log:
+
+```
+axiregs 43c00000.axiregs: ... ID 0x4d5a0401 (project 04 design), PL clock 99999999 Hz
+xilinx-vdma 40400000.dma: Xilinx AXI DMA Engine Driver Probed!!
+dmaloop dmaloop: tx dma1chan1, rx dma1chan0, buffers tx 0x3f100000 rx 0x3f500000 (4194304 bytes each)
+```
+
+(`dma0` is the PS's own PL330 DMA. The buffers at ~0x3F000000 are near the top of the 1 GB DDR, so the 1 GB address window matters.)
+
+`dmaloop-bench` (100 transfers per size, all data correct):
+
+| Bytes | avg µs | MB/s |
+|---|---|---|
+| 1 KiB | 39 | 25 |
+| 4 KiB | 46 | 87 |
+| 16 KiB | 77 | 211 |
+| 64 KiB | 202 | 323 |
+| 256 KiB | 695 | 376 |
+| 1 MiB | 2663 | 393 |
+
+- Ceiling: 32 bits x 100 MHz = 400 MB/s; 1 MiB reaches 98% of it.
+- Model: time ≈ **36 µs fixed** + bytes / 400 MB/s (64 KiB: 36 + 164 = 200 µs, measured 202). The fixed part is descriptor setup, two interrupts, the tasklet and waking the sleeping writer. Small transfers are dominated by it; real streams use large buffers or scatter-gather (many buffers queued, no CPU in between).
+- The 4 MiB row did not show in the pasted output (100 x 4 MiB takes about a minute because the CPU fill/clear/compare runs on uncached memory; not timed). Not yet re-checked.
 
 ### Repo workflow (`~/microzed-linux/microzed`)
 
@@ -394,11 +459,13 @@ The next projects are written as self-contained briefs in `microzed/projects/` (
 1. ~~`01-vivado-setup.md`: install Vivado, first bitstream.~~ Done 2026-11-15.
 2. ~~`02-axi-registers.md`: custom AXI register block, load the bitstream from Linux, driver.~~ Done 2026-11-17.
 3. ~~`03-pl-timer-interrupt.md`: PL timer interrupt, blocking read.~~ Done 2026-11-17.
-4. `04-axi-dma-loopback.md`: AXI DMA loopback with the DMA engine framework.
+4. ~~`04-axi-dma-loopback.md`: AXI DMA loopback with the DMA engine framework.~~ Done 2026-11-18 (393 MB/s at 1 MiB).
 5. `05-dma-data-stream.md`: simulated ADC stream to a live web chart.
 6. `06-buildroot-package.md` (optional, any time): build our modules as Buildroot packages, `modprobe`.
 
-Next session: start `04-axi-dma-loopback.md`. Add the AXI DMA to the project 03 design (keep axiregs and pltimer, so `S40pl` keeps working; the DMA's two interrupts plus pltimer need an xlconcat block on IRQ_F2P: pltimer stays on input 0 = ID 61, DMA on inputs 1-2 = IDs 62-63, DT SPI 30-31). Change `FW` in `S40pl` and `FPGA_BIN` in the Makefile to the new bitstream.
+Next session: start `05-dma-data-stream.md`. Build on the project 04 design: replace the FIFO loop's source with a PL block that makes "ADC" samples (counter or sine) as an AXI4-Stream with TLAST every N samples, keep S2MM into DDR. Keep axiregs/pltimer and their addresses; bump the axiregs ID to `0x4D5A0501` and extend the `S40pl` ID check. Continuous streaming needs either scatter-gather or the cyclic API (`dmaengine_prep_dma_cyclic`, which xilinx_dma supports) so the DMA never waits for the CPU.
+
+Not yet tried in project 04 (optional): re-run the 4 MiB size (`echo 4194304 > size; echo 10 > run; cat result`); 64-bit stream/memory width (ceiling 800 MB/s, HP0 is already 64-bit; change `c_m_axi_*_data_width`, `c_*_tdata_width` and DT `xlnx,datawidth = <64>`); `dma_map_single()` + cached buffers instead of coherent ones, to compare CPU fill/compare time.
 
 Not yet tried in project 03 (optional): stress test at `period_us` 50 (`missed`, CPU load in `top`), and user-space jitter (`head -20 /dev/pltimer | awk ...`, compare with the driver's ±3.5 µs).
 
@@ -452,3 +519,9 @@ Note: most PL (FPGA) pins only reach the MicroHeaders on the underside, so PL I/
 - A level interrupt from the PL must be cleared in the device (W1C) by the handler, followed by a read-back, or it fires forever.
 - Device tree SPI number = GIC ID - 32. Zynq IRQ_F2P[0] = ID 61 = `<0 29 4>`.
 - When a new bitstream replaces the old one, keep the old blocks in the new design (only one bitstream at a time) and keep their addresses, so the old drivers still work.
+- A driver that reads PL registers in `probe()` must not be built into the kernel when its DT node is in the boot `.dtb` and the PL is loaded from Linux: it binds before the bitstream and hangs the CPU. Make it a module (kernel config fragment) and load it after the bitstream. Xilinx's AXI DMA driver is one (`CONFIG_XILINX_DMA=y` in `xilinx_zynq_defconfig`).
+- Kernel options: Buildroot "Additional configuration fragment files" + `make linux-reconfigure && make`; check with `grep` on `~/br-microzed/build/linux-*/.config`. After a kernel rebuild, `make clean && make` our modules.
+- AXI DMA "buffer length register width" defaults to 14 bits (16 KB per transfer). Set it in Vivado and in DT `xlnx,sg-length-width` to the same value.
+- DMA buffers: allocate with the DMA controller's device (`chan->device->dev`), use coherent memory or map + sync (the HP ports bypass the caches); start the receive channel before the transmit one.
+- The DMA's address window to DDR must cover all RAM (1 GB): CMA buffers sit near the top (~0x3F000000).
+- Vivado Tcl wiring by hand (`connect_bd_intf_net`, `connect_bd_net`, `axi_interconnect` with `NUM_SI`/`NUM_MI`) is predictable and readable; connection automation is fine for a single slave but picks names and interconnect types itself.
