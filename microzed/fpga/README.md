@@ -13,7 +13,7 @@ outside the repo, in `~/vivado/<name>`, because they are large and full of gener
 | `03-pltimer/pltimer.v` | Project 03: AXI4-Lite timer with a level interrupt output |
 | `03-pltimer/tb_pltimer.v` | Testbench for it (passes in Icarus Verilog) |
 | `03-pltimer/build.tcl` | Project 03: PS + axiregs (`0x43C00000`) + pltimer (`0x43C10000`), `irq` -> `IRQ_F2P[0]`; builds `mz03_pltimer.bin` (tested, works on the board) |
-| `04-dma-loopback/build.tcl` | Project 04: the project 03 design (axiregs ID `0x4D5A0401`) + AXI DMA at `0x40400000` with an AXI4-Stream FIFO loop, HP0 to DDR, DMA interrupts on `IRQ_F2P[1..2]`; builds `mz04_dma.bin` (not yet tested) |
+| `04-dma-loopback/build.tcl` | Project 04: the project 03 design (axiregs ID `0x4D5A0401`) + AXI DMA at `0x40400000` with an AXI4-Stream FIFO loop, HP0 to DDR, DMA interrupts on `IRQ_F2P[1..2]`; builds `mz04_dma.bin` (tested, works on the board) |
 
 ## One-time setup (laptop)
 
