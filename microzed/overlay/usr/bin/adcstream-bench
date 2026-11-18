@@ -12,7 +12,8 @@
 S=/sys/bus/platform/devices/43c20000.adcstream
 SECS=${1:-10}
 BS=$2
-RATES="100000 1000000 2000000 5000000 10000000 20000000 25000000 33333333 50000000 100000000"
+# The PL clock is 99999999 Hz, so the top rate (DIV = 1) is 99999999, not 100000000.
+RATES="100000 1000000 2000000 5000000 10000000 15000000 20000000 25000000 33333333 50000000 99999999"
 
 [ -d $S ] || { echo "adcstream driver not loaded (PL design 05? see /etc/init.d/S40pl)"; exit 1; }
 
@@ -29,7 +30,10 @@ cpu_snap() { awk '/^cpu /{print $2+$3+$4+$5+$6+$7+$8, $5+$6}' /proc/stat; }
 echo "block_samples $(cat $S/block_samples), nbuf $(cat /sys/module/adcstream/parameters/nbuf), $SECS s per rate"
 printf "%10s %11s %7s %9s %9s %10s %5s\n" rate Sa/s MB/s lost overruns pl_dropped cpu%
 for r in $RATES; do
-  echo $r > $S/rate
+  if ! echo $r > $S/rate 2>/dev/null; then
+    echo "$r: rate rejected by the driver, skipped"
+    continue
+  fi
   set -- $(cpu_snap); t0=$1; i0=$2
   line=$(adcread -q -t "$SECS")
   set -- $(cpu_snap); t1=$1; i1=$2
