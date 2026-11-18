@@ -15,7 +15,7 @@
  *   reg0, reg1   read/write (decimal or 0x hex)
  *   sum          read: reg0 + reg1, computed by the PL
  *   count        read: free-running 100 MHz counter
- *   id           read: 0x4d5a0201
+ *   id           read: 0x4d5a0201 (project 02 design) or 0x4d5a0401 (project 04)
  *
  * Load the bitstream BEFORE this driver (S40axiregs does both). Reading a PL
  * address with no logic behind it hangs the CPU, so probe() first asks the
@@ -40,7 +40,8 @@
 #define AXIREGS_COUNT	0x0c
 #define AXIREGS_ID	0x10
 
-#define AXIREGS_ID_VALUE 0x4d5a0201
+/* ID = 0x4d5a ("MZ") << 16 | project << 8 | version. Any project's design is fine. */
+#define AXIREGS_ID_MAGIC 0x4d5a
 
 struct axiregs {
 	void __iomem *base;	/* virtual address of the 4 KB register window */
@@ -187,14 +188,14 @@ static int axiregs_probe(struct platform_device *pdev)
 		return PTR_ERR(ar->base);
 
 	id = readl(ar->base + AXIREGS_ID);
-	if (id != AXIREGS_ID_VALUE)
+	if (id >> 16 != AXIREGS_ID_MAGIC)
 		return dev_err_probe(dev, -ENODEV,
-				     "wrong ID 0x%08x (expected 0x%08x): wrong bitstream?\n",
-				     id, AXIREGS_ID_VALUE);
+				     "wrong ID 0x%08x (expected 0x%04xNNNN): wrong bitstream?\n",
+				     id, AXIREGS_ID_MAGIC);
 
 	platform_set_drvdata(pdev, ar);
-	dev_info(dev, "axiregs at %pR, ID 0x%08x, PL clock %lu Hz\n",
-		 res, id, clk_get_rate(clk));
+	dev_info(dev, "axiregs at %pR, ID 0x%08x (project %02x design), PL clock %lu Hz\n",
+		 res, id, (id >> 8) & 0xff, clk_get_rate(clk));
 	return 0;
 }
 

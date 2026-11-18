@@ -1,0 +1,86 @@
+#!/bin/sh
+# Program the PL, then load the drivers for what is in it.
+#
+#   1. bitstream /lib/firmware/pl.bin -> FPGA manager
+#   2. axiregs.ko (in every design; its ID register says which design it is)
+#   3. only for the project 04 design (ID 0x4d5a04xx):
+#      xilinx_dma (kernel's AXI DMA driver), then dmaloop.ko (our client)
+#
+# Order matters: a PL address read with no logic behind it hangs the CPU,
+# so the bitstream goes in first and the drivers after it. xilinx_dma must
+# be a module (configs/linux.fragment) for the same reason.
+#
+# FPGA manager sysfs files (Xilinx kernel):
+#   flags    0 = full bitstream (1 would be partial reconfiguration)
+#   firmware file name; the kernel reads it from /lib/firmware/ and programs the PL
+#   state    "operating" once the PL runs
+# (fpgautil -b /lib/firmware/pl.bin does the same.)
+
+FW=pl.bin
+MGR=/sys/class/fpga_manager/fpga0
+AXIREGS=/sys/bus/platform/devices/43c00000.axiregs
+
+loaded() { grep -q "^$1 " /proc/modules; }
+
+load_pl() {
+  printf "Programming PL with %s: " $FW
+  if [ ! -f /lib/firmware/$FW ]; then
+    echo "FAIL (/lib/firmware/$FW missing)"
+    return 1
+  fi
+  echo 0 > $MGR/flags
+  if echo $FW > $MGR/firmware && [ "$(cat $MGR/state)" = "operating" ]; then
+    echo "OK"
+  else
+    echo "FAIL (state: $(cat $MGR/state), see dmesg)"
+    return 1
+  fi
+}
+
+# load <name> <command...>: run the command, print OK/FAIL
+load() {
+  name=$1; shift
+  printf "Loading %s: " $name
+  if "$@"; then echo "OK"; else echo "FAIL (see dmesg)"; return 1; fi
+}
+
+unload() {
+  loaded $1 || return 0
+  printf "Unloading %s: " $1
+  if rmmod $1; then echo "OK"; else echo "FAIL"; fi
+}
+
+case "$1" in
+  start)
+    if loaded axiregs; then
+      echo "PL drivers already loaded (run $0 restart to reprogram)"
+      exit 0
+    fi
+    load_pl || exit 1
+    load axiregs insmod /lib/modules/axiregs/axiregs.ko || exit 1
+    id=$(cat $AXIREGS/id 2>/dev/null)
+    case "$id" in
+      0x4d5a04*)
+        load xilinx_dma modprobe xilinx_dma || exit 1
+        load dmaloop insmod /lib/modules/dmaloop/dmaloop.ko || exit 1
+        [ -e /sys/bus/platform/drivers/dmaloop/dmaloop ] \
+          || echo "dmaloop: driver loaded but not bound (DMA node disabled? see dmesg)"
+        ;;
+      *) echo "PL design $id has no DMA, xilinx_dma/dmaloop not loaded" ;;
+    esac
+    ;;
+  stop)
+    # Reverse order: the client first, it holds the DMA channels.
+    unload dmaloop
+    unload xilinx_dma
+    unload axiregs
+    ;;
+  restart)
+    $0 stop
+    $0 start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
+esac

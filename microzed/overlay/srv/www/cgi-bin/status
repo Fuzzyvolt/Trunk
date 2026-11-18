@@ -37,6 +37,14 @@ else
   PL="<tr><td colspan=2>axiregs driver not loaded</td></tr>"
 fi
 
+# Last AXI DMA loopback result from the dmaloop driver (project 04), if bound.
+DL=/sys/bus/platform/devices/dmaloop
+if [ -r $DL/result ]; then
+  DMA="$(cat $DL/result)"
+else
+  DMA="dmaloop driver not loaded"
+fi
+
 cat << HTML
 <!doctype html><html><head>
 <meta name="viewport" content="width=device-width">
@@ -62,6 +70,7 @@ done)
 <table>
 $PL
 </table>
+<p>DMA loopback, last run: $DMA</p>
 <p>LED D3: <b>$LED</b></p>
 <form method="post" action="/cgi-bin/control">
 <button name="action" value="led_on">LED on</button>

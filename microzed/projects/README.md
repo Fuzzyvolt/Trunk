@@ -8,7 +8,7 @@ The order matters: each project builds on the ones before it.
 | 01 | [Vivado setup](01-vivado-setup.md) (done) | No |
 | 02 | [AXI register block](02-axi-registers.md) (done) | No |
 | 03 | [PL timer with interrupt](03-pl-timer-interrupt.md) | No |
-| 04 | [AXI DMA loopback](04-axi-dma-loopback.md) | No |
+| 04 | [AXI DMA loopback](04-axi-dma-loopback.md) (files written, testing) | No |
 | 05 | [DMA data stream (simulated ADC)](05-dma-data-stream.md) | No |
 | 06 | [Buildroot package for our modules](06-buildroot-package.md) | No (optional, any time) |
 

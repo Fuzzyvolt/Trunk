@@ -12,13 +12,16 @@ Source for the programs and the Buildroot rootfs overlay used in `buildroot-micr
 | `modules/hello/` | First kernel module (own Makefile, builds against the Buildroot kernel) |
 | `modules/myled-dt/` | Same `/dev/myled`, as a platform driver bound to a device tree node (`compatible = "microzed,myled"`) |
 | `modules/myled-irq/` | Adds PB1 with an interrupt: `/dev/mybutton` blocks until a press; a press toggles the LED |
-| `board/post-image-dt.sh` | Buildroot post-image script: adds the `myled` and `axiregs@43c00000` nodes to the `.dtb` before the SD image is made |
+| `board/post-image-dt.sh` | Buildroot post-image script: adds the `myled`, `axiregs@43c00000`, `dma@40400000` and `dmaloop` nodes to the `.dtb` before the SD image is made |
 | `modules/axiregs/` | Project 02: platform driver for the AXI register block in the PL, sysfs files `reg0`, `reg1`, `sum`, `count`, `id` |
+| `modules/dmaloop/` | Project 04: DMA engine client, loops a buffer through the PL (sysfs `size`, `run`, `result`) |
+| `configs/linux.fragment` | Kernel options on top of `xilinx_zynq_defconfig` (`CONFIG_XILINX_DMA=m`) |
+| `overlay/usr/bin/dmaloop-bench` | Runs the DMA loopback for sizes 1 KB to 4 MB and prints a throughput table |
 | `modules/myled/` | Character driver: `/dev/myled` controls LED D3 (`echo 1`, `echo 0`, `echo t`, `cat`) |
 | `overlay/` | Files copied into the board's root filesystem (mirrors `/`) |
 | `overlay/etc/init.d/S90httpd` | Starts BusyBox httpd at boot |
 | `overlay/etc/init.d/S30myled` | Loads the myled_irq driver at boot (`/lib/modules/myled/myled_irq.ko`) |
-| `overlay/etc/init.d/S40axiregs` | Programs the PL with `/lib/firmware/axiregs.bin`, then loads the axiregs driver |
+| `overlay/etc/init.d/S40pl` | Programs the PL with `/lib/firmware/pl.bin`, loads axiregs, and for the project 04 design xilinx_dma + dmaloop (replaces `S40axiregs`) |
 | `overlay/etc/network/interfaces` | eth0 DHCP with the fixed MAC `02:0a:35:00:00:01` |
 | `overlay/srv/www/cgi-bin/` | Web page: `status`, `control` (buttons), `index.cgi` (redirect for `/`) |
 | `configs/busybox.fragment` | BusyBox options (httpd + CGI) |
@@ -158,8 +161,8 @@ grep myled /proc/interrupts  # interrupt count
 ## AXI register block (project 02)
 
 - `fpga/02-axiregs/build.tcl` makes `~/vivado/mz02_axiregs/axiregs.bin` (see `fpga/README.md`).
-- `make` builds `modules/axiregs/axiregs.ko`; `make overlay` / `make push` install it as `/lib/modules/axiregs/axiregs.ko` and the bitstream as `/lib/firmware/axiregs.bin` (skipped with a warning if it is not built yet).
-- At boot, `/etc/init.d/S40axiregs` programs the PL, then loads the driver. By hand: `/etc/init.d/S40axiregs start|stop|restart`.
+- `make` builds `modules/axiregs/axiregs.ko`; `make overlay` / `make push` install it as `/lib/modules/axiregs/axiregs.ko` and the bitstream as `/lib/firmware/pl.bin` (skipped with a warning if it is not built yet).
+- At boot, `/etc/init.d/S40pl` programs the PL, then loads the driver. By hand: `/etc/init.d/S40pl start|stop|restart`.
 - The driver needs the `axiregs@43c00000` device tree node: `make flash` after pulling (the post-image script adds it).
 
 On the board:
@@ -172,3 +175,18 @@ cat id                                        # 0x4d5a0201
 ```
 
 Never read `0x43C00000` (devmem or driver) before the bitstream is loaded: the CPU hangs until a power cycle.
+
+## AXI DMA loopback (project 04)
+
+- One-time: Buildroot menuconfig -> Kernel -> "Additional configuration fragment files" = `/home/fabio/microzed-linux/microzed/configs/linux.fragment`, then `make linux-reconfigure && make` in `~/br-microzed`. It makes the Xilinx DMA driver a module: built in, it would hang the boot (it reads the DMA registers before the PL is programmed).
+- `post-image-dt.sh` adds the DMA node only with `status = "okay"` if the kernel has `CONFIG_XILINX_DMA=m`; otherwise it writes it disabled and prints a warning.
+- `fpga/04-dma-loopback/build.tcl` builds the bitstream; `make flash` installs everything.
+- At boot `S40pl` loads the bitstream, `axiregs`, then (ID `0x4d5a04xx` only) `xilinx_dma` and `dmaloop`.
+
+On the board:
+
+```bash
+cd /sys/bus/platform/devices/dmaloop
+echo 65536 > size; echo 100 > run; cat result
+dmaloop-bench          # table for 1 KB .. 4 MB
+```

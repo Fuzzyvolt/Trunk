@@ -10,6 +10,7 @@ outside the repo, in `~/vivado/<name>`, because they are large and full of gener
 | `02-axiregs/tb_axiregs.v` | Testbench for it (Icarus Verilog or Vivado simulator) |
 | `02-axiregs/build.tcl` | Project 02: PS + axiregs on M_AXI_GP0 at `0x43C00000`, builds `.bit`, `axiregs.bin`, `.xsa` (tested, works on the board) |
 | `02-axiregs/bit2bin.tcl` | Converts `.bit` to the byte-swapped `.bin` the Linux FPGA manager loads (replaces `bootgen`) |
+| `04-dma-loopback/build.tcl` | Project 04: axiregs (ID `0x4D5A0401`) + AXI DMA at `0x40400000` with an AXI4-Stream FIFO loop, HP0 to DDR, interrupts on IRQ_F2P. Builds `mz04_dma.bin` (not yet tested) |
 
 ## One-time setup (laptop)
 
@@ -64,3 +65,24 @@ cd ~/microzed-linux/microzed/fpga/02-axiregs && vivado -mode batch -source build
 
 Output in `~/vivado/mz02_axiregs/`: `mz02_axiregs.bit`, `axiregs.bin` (for the board), `mz02_axiregs.xsa`.
 `make overlay` / `make push` in `microzed/` copy `axiregs.bin` to `/lib/firmware/` on the board.
+
+## Project 04: AXI DMA loopback
+
+```
+CPU --GP0--> axi_gp0_ic --> axiregs_0 (0x43C00000), axi_dma_0 registers (0x40400000)
+DDR <--HP0-- axi_hp0_ic <-- axi_dma_0 MM2S (reads DDR) + S2MM (writes DDR)
+axi_dma_0 MM2S stream --> axis_fifo (4 KB) --> S2MM stream
+mm2s_introut -> IRQ 61, s2mm_introut -> IRQ 62
+```
+
+Simple mode (no scatter-gather), 32-bit data, buffer length register 23 bits (up to 8 MB per transfer).
+
+Build:
+
+```bash
+cd ~/microzed-linux/microzed/fpga/04-dma-loopback && vivado -mode batch -source build.tcl
+```
+
+Output in `~/vivado/mz04_dma/`: `mz04_dma.bit`, `mz04_dma.bin`, `mz04_dma.xsa`, `utilization.txt`.
+`make overlay` / `make push` in `microzed/` install `mz04_dma.bin` as `/lib/firmware/pl.bin`
+(they fall back to project 02's `axiregs.bin` if project 04 is not built).
