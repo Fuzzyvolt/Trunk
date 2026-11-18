@@ -12,19 +12,23 @@ Source for the programs and the Buildroot rootfs overlay used in `buildroot-micr
 | `modules/hello/` | First kernel module (own Makefile, builds against the Buildroot kernel) |
 | `modules/myled-dt/` | Same `/dev/myled`, as a platform driver bound to a device tree node (`compatible = "microzed,myled"`) |
 | `modules/myled-irq/` | Adds PB1 with an interrupt: `/dev/mybutton` blocks until a press; a press toggles the LED |
-| `board/post-image-dt.sh` | Buildroot post-image script: adds the `myled`, `axiregs@43c00000`, `pltimer@43c10000`, `dma@40400000` and `dmaloop` nodes to the `.dtb` before the SD image is made |
+| `board/post-image-dt.sh` | Buildroot post-image script: adds the `myled`, `axiregs@43c00000`, `pltimer@43c10000`, `dma@40400000`, `dmaloop` and `adcstream@43c20000` nodes to the `.dtb` before the SD image is made |
 | `modules/axiregs/` | Project 02: platform driver for the AXI register block in the PL, sysfs files `reg0`, `reg1`, `sum`, `count`, `id` |
 | `modules/pltimer/` | Project 03: PL timer driver, `/dev/pltimer` blocks until the next tick; sysfs `period_us`, `enable`, `ticks`, `pl_ticks`, `missed`, `stats` |
 | `modules/dmaloop/` | Project 04: DMA engine client, loops a buffer through the PL (sysfs `size`, `run`, `result`) |
+| `modules/adcstream/` | Project 05: simulated-ADC stream driver: DMA buffer ring, `/dev/adcstream` (blocks of samples), sysfs `enable`, `rate`, `freq`, `mode`, `block_samples`, `overruns`, `pl_dropped`, `status`, `snapshot` |
+| `apps/adcread.c` | Project 05: reads `/dev/adcstream`, checks for lost samples, prints rate/min/max/mean per second, optional CSV |
+| `overlay/usr/bin/adcstream-bench` | Project 05: runs `adcread` at rising sample rates to find the highest one with no loss |
+| `overlay/srv/www/scope.html`, `overlay/srv/www/cgi-bin/adc` | Project 05: live chart of the stream, with rate/frequency/mode settings |
 | `configs/linux.fragment` | Kernel options on top of `xilinx_zynq_defconfig` (`CONFIG_XILINX_DMA=m`) |
 | `overlay/usr/bin/dmaloop-bench` | Runs the DMA loopback for sizes 1 KB to 4 MB and prints a throughput table |
 | `modules/myled/` | Character driver: `/dev/myled` controls LED D3 (`echo 1`, `echo 0`, `echo t`, `cat`) |
 | `overlay/` | Files copied into the board's root filesystem (mirrors `/`) |
 | `overlay/etc/init.d/S90httpd` | Starts BusyBox httpd at boot |
 | `overlay/etc/init.d/S30myled` | Loads the myled_irq driver at boot (`/lib/modules/myled/myled_irq.ko`) |
-| `overlay/etc/init.d/S40pl` | Programs the PL with `/lib/firmware/pl.bin`, loads axiregs and pltimer, and for the project 04 design xilinx_dma + dmaloop (replaces `S40axiregs`) |
+| `overlay/etc/init.d/S40pl` | Programs the PL with `/lib/firmware/pl.bin`, loads axiregs and pltimer, then xilinx_dma + dmaloop (project 04 design) or xilinx_dma + adcstream (project 05 design) |
 | `overlay/etc/network/interfaces` | eth0 DHCP with the fixed MAC `02:0a:35:00:00:01` |
-| `overlay/srv/www/cgi-bin/` | Web page: `status`, `control` (buttons), `index.cgi` (redirect for `/`) |
+| `overlay/srv/www/cgi-bin/` | Web page: `status`, `control` (buttons), `index.cgi` (redirect for `/`), `adc` (data for `/scope.html`) |
 | `configs/busybox.fragment` | BusyBox options (httpd + CGI) |
 | `Makefile` | Build, copy to the overlay, or push to the board |
 | `fpga/` | FPGA (PL) sources: Verilog, Vivado Tcl scripts; projects are built outside the repo |
@@ -208,3 +212,22 @@ cd /sys/bus/platform/devices/dmaloop
 echo 65536 > size; echo 100 > run; cat result
 dmaloop-bench          # table for 1 KB .. 4 MB
 ```
+
+## DMA data stream, simulated ADC (project 05)
+
+- `fpga/05-adc-stream/build.tcl` builds `~/vivado/mz05_adc/mz05_adc.bin` (project 04 design, with `adcsim` at `0x43C20000` feeding the DMA's S2MM side). Once built, `make overlay` / `make push` install it as `/lib/firmware/pl.bin`.
+- The driver needs the `adcstream@43c20000` node: `make flash` after pulling.
+- At boot `S40pl` loads the bitstream, axiregs, pltimer, then (axiregs ID `0x4d5a05xx` only) `xilinx_dma` and `adcstream`. The stream starts at load: 1 MSa/s, 1 kHz sine, blocks of 4096 samples.
+
+On the board:
+
+```bash
+cd /sys/bus/platform/devices/43c20000.adcstream
+cat status
+adcread -t 60                 # 60 s, one line per second, summary at the end
+echo 5000000 > rate           # 5 MSa/s (100 MHz / 20)
+echo 0 > enable; echo 16384 > block_samples; echo 1 > enable
+adcstream-bench 10            # highest rate with no loss
+```
+
+Live chart: `http://10.0.0.134/scope.html` (also linked from the status page).

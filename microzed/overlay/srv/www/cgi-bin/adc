@@ -1,0 +1,74 @@
+#!/bin/sh
+# ADC stream data and settings for /scope.html (project 05).
+#
+#   GET   JSON: settings, counters, and the newest block's snapshot
+#         (about 256 evenly spaced samples, from the adcstream driver)
+#   POST  change settings: enable=0|1, rate=<Sa/s>, freq=<Hz>, mode=sine|saw
+#         joined with &, for example "rate=2000000&freq=5000". Only digits
+#         (or the two mode words) are accepted; nothing reaches the shell.
+S=/sys/bus/platform/devices/43c20000.adcstream
+
+json() {
+  echo "Content-Type: application/json"
+  echo "Cache-Control: no-store"
+  echo ""
+  echo "$1"
+}
+
+if [ ! -r $S/status ]; then
+  json '{"error":"adcstream driver not loaded (needs the project 05 bitstream)"}'
+  exit 0
+fi
+
+if [ "$REQUEST_METHOD" = "POST" ]; then
+  BODY=$(head -c "${CONTENT_LENGTH:-0}")
+  set -f            # no * or ? expansion of the request text
+  IFS='&'
+  for kv in $BODY; do
+    key=${kv%%=*}
+    val=${kv#*=}
+    case "$key" in
+      enable|rate|freq)
+        case "$val" in ''|*[!0-9]*) json '{"error":"bad number"}'; exit 0 ;; esac ;;
+      mode)
+        case "$val" in sine|saw) ;; *) json '{"error":"bad mode"}'; exit 0 ;; esac ;;
+      *) json '{"error":"unknown setting"}'; exit 0 ;;
+    esac
+    if ! echo "$val" > $S/$key 2>/dev/null; then
+      json "{\"error\":\"$key=$val rejected by the driver\"}"
+      exit 0
+    fi
+  done
+  json '{"ok":true}'
+  exit 0
+fi
+
+# GET. status: "running=1 error=0 ... pl_packets=N" (key=value pairs)
+# snapshot: "block=.. rate=.. step=.. n=..", then "seq,value seq,value ..."
+{ cat $S/status; cat $S/snapshot 2>/dev/null; } | awk '
+  NR == 1 {
+    for (i = 1; i <= NF; i++) { split($i, kv, "="); st[kv[1]] = kv[2] }
+    next
+  }
+  NR == 2 {
+    for (i = 1; i <= NF; i++) { split($i, kv, "="); sn[kv[1]] = kv[2] }
+    next
+  }
+  NR == 3 {
+    for (i = 1; i <= NF; i++) {
+      split($i, p, ",")
+      seq = seq (i > 1 ? "," : "") p[1]
+      val = val (i > 1 ? "," : "") p[2]
+    }
+  }
+  END {
+    printf "Content-Type: application/json\nCache-Control: no-store\n\n"
+    printf "{\"running\":%d,\"error\":%d,\"reader\":%d,\"rate\":%d,\"freq\":%d,\"mode\":\"%s\",",
+      st["running"], st["error"], st["reader"], st["rate"], st["freq"], st["mode"]
+    printf "\"block_samples\":%d,\"nbuf\":%d,\"blocks\":%s,\"overruns\":%s,",
+      st["block_samples"], st["nbuf"], st["blocks"], st["overruns"]
+    printf "\"pl_samples\":%s,\"pl_dropped\":%s,\"pl_packets\":%s,",
+      st["pl_samples"], st["pl_dropped"], st["pl_packets"]
+    printf "\"snap_block\":%d,\"snap_rate\":%d,\"step\":%d,\"seq\":[%s],\"v\":[%s]}\n",
+      sn["block"], sn["rate"], sn["step"], seq, val
+  }'

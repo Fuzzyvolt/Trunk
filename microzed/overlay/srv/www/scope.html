@@ -1,0 +1,157 @@
+<!doctype html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MicroZed scope</title>
+<!--
+  Project 05: live chart of the simulated ADC stream.
+  Asks /cgi-bin/adc for the newest block about twice a second and draws its
+  snapshot (about 256 evenly spaced samples) as an SVG line. No libraries.
+  The snapshot is plain decimation (every step-th sample, no filter), so a
+  signal faster than rate / (2 * step) aliases in the chart (not in the data).
+-->
+<style>
+  body { font-family: sans-serif; margin: 12px; max-width: 900px; }
+  svg { width: 100%; height: auto; background: #111; border-radius: 6px; display: block; }
+  .grid { stroke: #333; stroke-width: 1; }
+  .axis { stroke: #555; stroke-width: 1; }
+  .trace { fill: none; stroke: #3c3; stroke-width: 2; }
+  .lbl { fill: #999; font-size: 24px; }
+  table { border-collapse: collapse; margin: 8px 0; }
+  td { padding: 2px 12px 2px 0; }
+  .bad { color: #b00; font-weight: bold; }
+  fieldset { border: 1px solid #ccc; border-radius: 6px; margin: 8px 0; }
+  input { width: 8em; font-size: 1em; }
+  select, button { font-size: 1em; padding: 6px 10px; margin: 4px 4px 4px 0; }
+  #msg { color: #b00; }
+</style>
+</head><body>
+<h2>ADC stream <small><a href="/cgi-bin/status">status page</a></small></h2>
+
+<svg id="scope" viewBox="0 0 1000 420" preserveAspectRatio="none">
+  <g id="grid"></g>
+  <polyline id="trace" class="trace" points=""></polyline>
+  <text id="xl" class="lbl" x="8" y="412"></text>
+  <text class="lbl" x="8" y="34">+32767</text>
+  <text class="lbl" x="8" y="396">-32768</text>
+</svg>
+
+<table>
+<tr><td>Stream</td><td id="run">?</td></tr>
+<tr><td>Rate</td><td id="rate"></td></tr>
+<tr><td>Signal</td><td id="sig"></td></tr>
+<tr><td>Block</td><td id="blk"></td></tr>
+<tr><td>Shown</td><td id="shown"></td></tr>
+<tr><td>Blocks done</td><td id="blocks"></td></tr>
+<tr><td>Overruns (reader too slow)</td><td id="ovr"></td></tr>
+<tr><td>PL dropped (FIFO full)</td><td id="drop"></td></tr>
+</table>
+
+<fieldset><legend>Settings</legend>
+  <label>Rate (Sa/s) <input id="i_rate" type="number" min="1" max="100000000"></label>
+  <label>Freq (Hz) <input id="i_freq" type="number" min="0"></label>
+  <select id="i_mode"><option value="sine">sine</option><option value="saw">sawtooth</option></select>
+  <br>
+  <button onclick="apply()">Apply</button>
+  <button onclick="send('enable=1')">Start</button>
+  <button onclick="send('enable=0')">Stop</button>
+  <button id="pause" onclick="togglePause()">Pause chart</button>
+  <div id="msg"></div>
+</fieldset>
+
+<script>
+const W = 1000, H = 420, TOP = 10, BOT = 385;   // plot area in SVG units
+let paused = false, filled = false;
+
+function y(v) { return TOP + (32767 - v) * (BOT - TOP) / 65535; }
+
+function grid() {
+  let g = '';
+  for (let i = 0; i <= 10; i++) g += `<line class="grid" x1="${i*W/10}" y1="${TOP}" x2="${i*W/10}" y2="${BOT}"/>`;
+  for (let i = 0; i <= 4; i++)  g += `<line class="grid" x1="0" y1="${TOP+i*(BOT-TOP)/4}" x2="${W}" y2="${TOP+i*(BOT-TOP)/4}"/>`;
+  g += `<line class="axis" x1="0" y1="${y(0)}" x2="${W}" y2="${y(0)}"/>`;
+  document.getElementById('grid').innerHTML = g;
+}
+
+function fmtRate(r) {
+  return r >= 1e6 ? (r/1e6) + ' MSa/s' : r >= 1e3 ? (r/1e3) + ' kSa/s' : r + ' Sa/s';
+}
+function fmtTime(s) {
+  return s >= 1 ? s.toFixed(2) + ' s' : s >= 1e-3 ? (s*1e3).toFixed(2) + ' ms' : (s*1e6).toFixed(1) + ' µs';
+}
+function set(id, html, bad) {
+  const e = document.getElementById(id);
+  e.innerHTML = html;
+  e.className = bad ? 'bad' : '';
+}
+
+function show(d) {
+  if (d.error && typeof d.error === 'string') { set('run', d.error, true); return; }
+  set('run', d.error ? 'stopped by an error (Stop, then Start)' : d.running ? 'running' : 'stopped', d.error);
+  set('rate', fmtRate(d.rate));
+  set('sig', `${d.mode}, ${d.freq} Hz`);
+  set('blk', `${d.block_samples} samples = ${fmtTime(d.block_samples / d.rate)}, ring of ${d.nbuf}`);
+  set('blocks', d.blocks);
+  set('ovr', d.overruns, d.overruns > 0);
+  set('drop', d.pl_dropped, d.pl_dropped > 0);
+  if (!filled) {          // settings fields: fill once, then leave them to the user
+    document.getElementById('i_rate').value = d.rate;
+    document.getElementById('i_freq').value = d.freq;
+    document.getElementById('i_mode').value = d.mode;
+    filled = true;
+  }
+  const n = d.v.length;
+  if (!n) { set('shown', 'no data yet'); return; }
+  let vmin = 32767, vmax = -32768, pts = '';
+  for (let i = 0; i < n; i++) {
+    const v = d.v[i];
+    if (v < vmin) vmin = v;
+    if (v > vmax) vmax = v;
+    pts += `${(i * W / Math.max(1, n - 1)).toFixed(1)},${y(v).toFixed(1)} `;
+  }
+  document.getElementById('trace').setAttribute('points', pts);
+  const span = n * d.step / d.snap_rate;
+  document.getElementById('xl').textContent = `0 .. ${fmtTime(span)}  (${fmtTime(span/10)}/div)`;
+  set('shown', `block ${d.snap_block}: ${n} points, every ${d.step}th sample, min ${vmin}, max ${vmax}`);
+}
+
+async function poll() {
+  if (!paused) {
+    try {
+      const r = await fetch('/cgi-bin/adc', { cache: 'no-store' });
+      show(await r.json());
+    } catch (e) {
+      set('run', 'no answer from the board', true);
+    }
+  }
+  setTimeout(poll, 500);      // next request only after this one finished
+}
+
+async function send(body) {
+  document.getElementById('msg').textContent = '';
+  try {
+    const r = await fetch('/cgi-bin/adc', { method: 'POST', body: body });
+    const d = await r.json();
+    if (d.error) document.getElementById('msg').textContent = d.error;
+  } catch (e) {
+    document.getElementById('msg').textContent = 'request failed';
+  }
+}
+
+function apply() {
+  const rate = document.getElementById('i_rate').value;
+  const freq = document.getElementById('i_freq').value;
+  const mode = document.getElementById('i_mode').value;
+  // rate first: freq is checked against rate / 2
+  send(`rate=${rate}&freq=${freq}&mode=${mode}`);
+}
+
+function togglePause() {
+  paused = !paused;
+  document.getElementById('pause').textContent = paused ? 'Resume chart' : 'Pause chart';
+}
+
+grid();
+poll();
+</script>
+</body></html>
