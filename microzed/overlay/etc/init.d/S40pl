@@ -1,16 +1,21 @@
 #!/bin/sh
-# Program the PL, then load the drivers for what is in it.
+# Program the PL, then load the drivers for the blocks in it.
 #
-#   1. bitstream /lib/firmware/pl.bin -> FPGA manager
-#   2. axiregs.ko (in every design; its ID register says which design it is)
-#   3. only for the project 04 design (ID 0x4d5a04xx):
-#      xilinx_dma (kernel's AXI DMA driver), then dmaloop.ko (our client)
+# Bitstream: /lib/firmware/pl.bin (the Makefile installs the newest built
+# design there: project 04 if built, else project 03).
+#   project 03: axiregs (0x43C00000) + pltimer (0x43C10000)
+#   project 04: the same + AXI DMA (0x40400000) with a FIFO loop
+# The axiregs ID register says which design is loaded: 0x4d5a0201 in the
+# project 03 design (axiregs unchanged), 0x4d5a0401 in the project 04 design.
+# Only for 0x4d5a04xx are xilinx_dma (the kernel's AXI DMA driver) and
+# dmaloop (our client) loaded.
 #
 # Order matters: a PL address read with no logic behind it hangs the CPU,
-# so the bitstream goes in first and the drivers after it. xilinx_dma must
-# be a module (configs/linux.fragment) for the same reason.
+# so the bitstream goes in first, the drivers second. xilinx_dma must be a
+# module (configs/linux.fragment) for the same reason. Stop unloads the
+# drivers but leaves the PL programmed.
 #
-# FPGA manager sysfs files (Xilinx kernel):
+# Bitstream loading uses the Xilinx kernel's FPGA manager sysfs files:
 #   flags    0 = full bitstream (1 would be partial reconfiguration)
 #   firmware file name; the kernel reads it from /lib/firmware/ and programs the PL
 #   state    "operating" once the PL runs
@@ -18,6 +23,8 @@
 
 FW=pl.bin
 MGR=/sys/class/fpga_manager/fpga0
+MODS="axiregs pltimer"            # in every design, loaded in this order
+ALL="dmaloop xilinx_dma pltimer axiregs"   # unload order (reverse of load)
 AXIREGS=/sys/bus/platform/devices/43c00000.axiregs
 
 loaded() { grep -q "^$1 " /proc/modules; }
@@ -44,36 +51,41 @@ load() {
   if "$@"; then echo "OK"; else echo "FAIL (see dmesg)"; return 1; fi
 }
 
-unload() {
-  loaded $1 || return 0
-  printf "Unloading %s: " $1
-  if rmmod $1; then echo "OK"; else echo "FAIL"; fi
-}
-
 case "$1" in
   start)
-    if loaded axiregs; then
-      echo "PL drivers already loaded (run $0 restart to reprogram)"
-      exit 0
-    fi
+    # Drivers already loaded = PL already programmed: reprogramming it under
+    # a running driver would pull the hardware away from it.
+    for m in $ALL; do
+      if loaded $m; then
+        echo "PL drivers already loaded (stop first)"
+        exit 0
+      fi
+    done
     load_pl || exit 1
-    load axiregs insmod /lib/modules/axiregs/axiregs.ko || exit 1
+    for m in $MODS; do
+      load $m insmod /lib/modules/$m/$m.ko
+    done
     id=$(cat $AXIREGS/id 2>/dev/null)
     case "$id" in
       0x4d5a04*)
         load xilinx_dma modprobe xilinx_dma || exit 1
         load dmaloop insmod /lib/modules/dmaloop/dmaloop.ko || exit 1
         [ -e /sys/bus/platform/drivers/dmaloop/dmaloop ] \
-          || echo "dmaloop: driver loaded but not bound (DMA node disabled? see dmesg)"
+          || echo "dmaloop: loaded but not bound (DMA node disabled? see dmesg)"
         ;;
-      *) echo "PL design $id has no DMA, xilinx_dma/dmaloop not loaded" ;;
+      *) echo "PL design ${id:-unknown} has no DMA: xilinx_dma, dmaloop not loaded" ;;
     esac
     ;;
   stop)
-    # Reverse order: the client first, it holds the DMA channels.
-    unload dmaloop
-    unload xilinx_dma
-    unload axiregs
+    for m in $ALL; do
+      loaded $m || continue
+      printf "Unloading %s: " $m
+      if rmmod $m; then
+        echo "OK"
+      else
+        echo "FAIL (in use? close /dev/pltimer readers)"
+      fi
+    done
     ;;
   restart)
     $0 stop

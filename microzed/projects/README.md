@@ -7,7 +7,7 @@ The order matters: each project builds on the ones before it.
 |---|---|---|
 | 01 | [Vivado setup](01-vivado-setup.md) (done) | No |
 | 02 | [AXI register block](02-axi-registers.md) (done) | No |
-| 03 | [PL timer with interrupt](03-pl-timer-interrupt.md) | No |
+| 03 | [PL timer with interrupt](03-pl-timer-interrupt.md) (done) | No |
 | 04 | [AXI DMA loopback](04-axi-dma-loopback.md) (files written, testing) | No |
 | 05 | [DMA data stream (simulated ADC)](05-dma-data-stream.md) | No |
 | 06 | [Buildroot package for our modules](06-buildroot-package.md) | No (optional, any time) |
@@ -19,7 +19,7 @@ PWM outputs (LED dimming, servos), an SPI ADC or pressure sensor sampled by the 
 
 Start a new session on this repo and say, for example:
 
-> Read `buildroot-microzed-project.md` and `microzed/projects/03-pl-timer-interrupt.md`, then let's do it.
+> Read `buildroot-microzed-project.md` and `microzed/projects/04-axi-dma-loopback.md`, then let's do it.
 
 - `buildroot-microzed-project.md` (repo root) is the full background: board, Buildroot setup, repo workflow, lessons learned, current state.
 - The brief is the task. Its "Done when" list is the finish line.

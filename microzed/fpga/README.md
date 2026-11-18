@@ -10,7 +10,10 @@ outside the repo, in `~/vivado/<name>`, because they are large and full of gener
 | `02-axiregs/tb_axiregs.v` | Testbench for it (Icarus Verilog or Vivado simulator) |
 | `02-axiregs/build.tcl` | Project 02: PS + axiregs on M_AXI_GP0 at `0x43C00000`, builds `.bit`, `axiregs.bin`, `.xsa` (tested, works on the board) |
 | `02-axiregs/bit2bin.tcl` | Converts `.bit` to the byte-swapped `.bin` the Linux FPGA manager loads (replaces `bootgen`) |
-| `04-dma-loopback/build.tcl` | Project 04: axiregs (ID `0x4D5A0401`) + AXI DMA at `0x40400000` with an AXI4-Stream FIFO loop, HP0 to DDR, interrupts on IRQ_F2P. Builds `mz04_dma.bin` (not yet tested) |
+| `03-pltimer/pltimer.v` | Project 03: AXI4-Lite timer with a level interrupt output |
+| `03-pltimer/tb_pltimer.v` | Testbench for it (passes in Icarus Verilog) |
+| `03-pltimer/build.tcl` | Project 03: PS + axiregs (`0x43C00000`) + pltimer (`0x43C10000`), `irq` -> `IRQ_F2P[0]`; builds `mz03_pltimer.bin` (tested, works on the board) |
+| `04-dma-loopback/build.tcl` | Project 04: the project 03 design (axiregs ID `0x4D5A0401`) + AXI DMA at `0x40400000` with an AXI4-Stream FIFO loop, HP0 to DDR, DMA interrupts on `IRQ_F2P[1..2]`; builds `mz04_dma.bin` (not yet tested) |
 
 ## One-time setup (laptop)
 
@@ -66,16 +69,54 @@ cd ~/microzed-linux/microzed/fpga/02-axiregs && vivado -mode batch -source build
 Output in `~/vivado/mz02_axiregs/`: `mz02_axiregs.bit`, `axiregs.bin` (for the board), `mz02_axiregs.xsa`.
 `make overlay` / `make push` in `microzed/` copy `axiregs.bin` to `/lib/firmware/` on the board.
 
+## Project 03: PL timer with interrupt
+
+```
+                                         +--> axiregs_0  0x43C00000 (project 02, kept)
+CPU --M_AXI_GP0--> AXI Interconnect -----+
+                                         +--> pltimer_0  0x43C10000
+GIC <-- IRQ_F2P[0] = GIC ID 61 <-------------------- irq
+```
+
+Register map (offsets from `0x43C10000`):
+
+| Offset | Name | Access | Content |
+|---|---|---|---|
+| 0x00 | CTRL | R/W | bit 0 EN (timer runs), bit 1 IE (interrupt output on) |
+| 0x04 | PERIOD | R/W | clock cycles per tick (100000 = 1 ms); 0 = no ticks |
+| 0x08 | STATUS | R/W1C | bit 0 PENDING; write 1 to clear (drops `irq`) |
+| 0x0C | TICKS | R/W | ticks since reset; any write sets it to 0 |
+| 0x10 | COUNT | R | position in the current period |
+| 0x14 | ID | R | `0x4D5A0301` |
+
+`irq` = PENDING and IE, from a flip-flop. It is a level interrupt: it stays high until the CPU clears PENDING.
+
+Simulate:
+
+```bash
+cd ~/microzed-linux/microzed/fpga/03-pltimer && iverilog -o /tmp/tb tb_pltimer.v pltimer.v && vvp /tmp/tb
+```
+
+Build (about as long as project 02):
+
+```bash
+cd ~/microzed-linux/microzed/fpga/03-pltimer && vivado -mode batch -source build.tcl
+```
+
+Output in `~/vivado/mz03_pltimer/`: `mz03_pltimer.bit`, `mz03_pltimer.bin` (for the board), `mz03_pltimer.xsa`.
+`make overlay` / `make push` in `microzed/` install it as `/lib/firmware/pl.bin` (unless project 04 is built); `/etc/init.d/S40pl` loads it at boot.
+
 ## Project 04: AXI DMA loopback
 
 ```
-CPU --GP0--> axi_gp0_ic --> axiregs_0 (0x43C00000), axi_dma_0 registers (0x40400000)
+CPU --GP0--> axi_gp0_ic --> axiregs_0 (0x43C00000), pltimer_0 (0x43C10000), axi_dma_0 registers (0x40400000)
 DDR <--HP0-- axi_hp0_ic <-- axi_dma_0 MM2S (reads DDR) + S2MM (writes DDR)
 axi_dma_0 MM2S stream --> axis_fifo (4 KB) --> S2MM stream
-mm2s_introut -> IRQ 61, s2mm_introut -> IRQ 62
+irq_concat: In0 pltimer -> GIC 61, In1 mm2s_introut -> GIC 62, In2 s2mm_introut -> GIC 63
 ```
 
 Simple mode (no scatter-gather), 32-bit data, buffer length register 23 bits (up to 8 MB per transfer).
+Wired by hand (no connection automation), so every connection is one line in the script.
 
 Build:
 
@@ -85,4 +126,4 @@ cd ~/microzed-linux/microzed/fpga/04-dma-loopback && vivado -mode batch -source 
 
 Output in `~/vivado/mz04_dma/`: `mz04_dma.bit`, `mz04_dma.bin`, `mz04_dma.xsa`, `utilization.txt`.
 `make overlay` / `make push` in `microzed/` install `mz04_dma.bin` as `/lib/firmware/pl.bin`
-(they fall back to project 02's `axiregs.bin` if project 04 is not built).
+(they fall back to project 03's `mz03_pltimer.bin` if project 04 is not built).

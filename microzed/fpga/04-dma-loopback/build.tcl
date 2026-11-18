@@ -9,12 +9,14 @@
 #   mz04_dma.bin   byte-swapped bitstream for the Linux FPGA manager
 #   mz04_dma.xsa   hardware description (not needed on the board)
 #
-# Only one bitstream can be loaded at a time, so this design keeps the
-# project 02 register block (ID changed to 0x4D5A0401, so Linux can tell
-# which design is loaded) and adds the DMA loop:
+# Only one bitstream can be loaded at a time, so this is the project 03
+# design (axiregs + pltimer, same addresses and interrupt) plus the DMA loop.
+# The axiregs ID is changed to 0x4D5A0401, so S40pl can tell which design is
+# loaded and only loads the DMA drivers for this one.
 #
 #                M_AXI_GP0                         (CPU writes DMA registers)
 #   CPU (PS) ---------------> axi_gp0_ic --+--> axiregs_0      0x43C00000  4K
+#                                          +--> pltimer_0      0x43C10000  4K
 #                                          +--> axi_dma_0 lite 0x40400000 64K
 #
 #   DDR <--- S_AXI_HP0 <--- axi_hp0_ic <---+--- M_AXI_MM2S  (DMA reads DDR)
@@ -22,8 +24,9 @@
 #
 #   axi_dma_0 M_AXIS_MM2S --> axis_fifo (4 KB) --> S_AXIS_S2MM axi_dma_0
 #
-#   mm2s_introut --> irq_concat In0 --> IRQ_F2P[0] = GIC IRQ 61 (DT: <0 29 4>)
-#   s2mm_introut --> irq_concat In1 --> IRQ_F2P[1] = GIC IRQ 62 (DT: <0 30 4>)
+#   pltimer irq  --> irq_concat In0 --> IRQ_F2P[0] = GIC ID 61 (DT: <0 29 4>, as in project 03)
+#   mm2s_introut --> irq_concat In1 --> IRQ_F2P[1] = GIC ID 62 (DT: <0 30 4>)
+#   s2mm_introut --> irq_concat In2 --> IRQ_F2P[2] = GIC ID 63 (DT: <0 31 4>)
 #
 #   FCLK_CLK0 (100 MHz) clocks all of the PL; rst_pl makes the resets.
 #
@@ -37,6 +40,7 @@ set projdir [file normalize ~/vivado/$name]
 if {[llength $argv] > 0} { set projdir [file normalize [lindex $argv 0]] }
 
 set regs_addr 0x43C00000
+set timer_addr 0x43C10000
 set dma_addr  0x40400000
 set design_id 0x4D5A0401
 # AXI DMA "Width of Buffer Length Register": max bytes per transfer = 2^n - 1.
@@ -62,8 +66,8 @@ if {$bp eq ""} {
 puts "Using board part: $bp"
 set_property board_part $bp [current_project]
 
-# Project 02's register block, used from its folder (not copied).
-add_files -norecurse $here/../02-axiregs/axiregs.v
+# Projects 02 and 03 HDL, used from their folders (not copied).
+add_files -norecurse [list $here/../02-axiregs/axiregs.v $here/../03-pltimer/pltimer.v]
 update_compile_order -fileset sources_1
 
 create_bd_design system
@@ -92,6 +96,7 @@ create_bd_cell -type ip -vlnv [ipdef proc_sys_reset] rst_pl
 
 create_bd_cell -type module -reference axiregs axiregs_0
 set_property CONFIG.ID $design_id [get_bd_cells axiregs_0]
+create_bd_cell -type module -reference pltimer pltimer_0
 
 # AXI DMA in simple (direct register) mode: no scatter-gather, one buffer per
 # transfer. 32-bit memory and stream sides; 16-beat bursts (the AXI3 maximum
@@ -116,18 +121,18 @@ set_property -dict [list \
 create_bd_cell -type ip -vlnv [ipdef axis_data_fifo] axis_fifo
 set_property CONFIG.FIFO_DEPTH {1024} [get_bd_cells axis_fifo]
 
-# Two interrupt wires -> one 2-bit IRQ_F2P bus. Newer Vivado versions replace
+# Three interrupt wires -> one 3-bit IRQ_F2P bus. Newer Vivado versions replace
 # xlconcat with the inline "ilconcat"; use whichever exists.
 set concat [lindex [lsort -dictionary [concat \
     [get_ipdefs -all xilinx.com:ip:xlconcat:*] \
     [get_ipdefs -all xilinx.com:inline_hdl:ilconcat:*]]] end]
 if {$concat eq ""} { error "No concat IP (xlconcat/ilconcat) found" }
 create_bd_cell -type ip -vlnv $concat irq_concat
-set_property CONFIG.NUM_PORTS {2} [get_bd_cells irq_concat]
+set_property CONFIG.NUM_PORTS {3} [get_bd_cells irq_concat]
 
-# CPU side: 1 master in (GP0), 2 slaves out. Converts AXI3 -> AXI4-Lite.
+# CPU side: 1 master in (GP0), 3 slaves out. Converts AXI3 -> AXI4-Lite.
 create_bd_cell -type ip -vlnv [ipdef axi_interconnect] axi_gp0_ic
-set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {2}] [get_bd_cells axi_gp0_ic]
+set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {3}] [get_bd_cells axi_gp0_ic]
 
 # Memory side: 2 masters in (MM2S, S2MM), 1 out (HP0). Converts 32 -> 64 bits.
 create_bd_cell -type ip -vlnv [ipdef axi_interconnect] axi_hp0_ic
@@ -136,7 +141,8 @@ set_property -dict [list CONFIG.NUM_SI {2} CONFIG.NUM_MI {1}] [get_bd_cells axi_
 # ---------------- AXI connections ----------------
 connect_bd_intf_net [get_bd_intf_pins ps7/M_AXI_GP0]        [get_bd_intf_pins axi_gp0_ic/S00_AXI]
 connect_bd_intf_net [get_bd_intf_pins axi_gp0_ic/M00_AXI]   [get_bd_intf_pins axiregs_0/s_axi]
-connect_bd_intf_net [get_bd_intf_pins axi_gp0_ic/M01_AXI]   [get_bd_intf_pins axi_dma_0/S_AXI_LITE]
+connect_bd_intf_net [get_bd_intf_pins axi_gp0_ic/M01_AXI]   [get_bd_intf_pins pltimer_0/s_axi]
+connect_bd_intf_net [get_bd_intf_pins axi_gp0_ic/M02_AXI]   [get_bd_intf_pins axi_dma_0/S_AXI_LITE]
 
 connect_bd_intf_net [get_bd_intf_pins axi_dma_0/M_AXI_MM2S] [get_bd_intf_pins axi_hp0_ic/S00_AXI]
 connect_bd_intf_net [get_bd_intf_pins axi_dma_0/M_AXI_S2MM] [get_bd_intf_pins axi_hp0_ic/S01_AXI]
@@ -151,6 +157,7 @@ connect_bd_net [get_bd_pins ps7/FCLK_CLK0] \
     [get_bd_pins ps7/S_AXI_HP0_ACLK] \
     [get_bd_pins rst_pl/slowest_sync_clk] \
     [get_bd_pins axiregs_0/s_axi_aclk] \
+    [get_bd_pins pltimer_0/s_axi_aclk] \
     [get_bd_pins axi_dma_0/s_axi_lite_aclk] \
     [get_bd_pins axi_dma_0/m_axi_mm2s_aclk] \
     [get_bd_pins axi_dma_0/m_axi_s2mm_aclk] \
@@ -159,6 +166,7 @@ connect_bd_net [get_bd_pins ps7/FCLK_CLK0] \
     [get_bd_pins axi_gp0_ic/S00_ACLK] \
     [get_bd_pins axi_gp0_ic/M00_ACLK] \
     [get_bd_pins axi_gp0_ic/M01_ACLK] \
+    [get_bd_pins axi_gp0_ic/M02_ACLK] \
     [get_bd_pins axi_hp0_ic/ACLK] \
     [get_bd_pins axi_hp0_ic/S00_ACLK] \
     [get_bd_pins axi_hp0_ic/S01_ACLK] \
@@ -172,18 +180,21 @@ connect_bd_net [get_bd_pins rst_pl/interconnect_aresetn] \
     [get_bd_pins axi_hp0_ic/ARESETN]
 connect_bd_net [get_bd_pins rst_pl/peripheral_aresetn] \
     [get_bd_pins axiregs_0/s_axi_aresetn] \
+    [get_bd_pins pltimer_0/s_axi_aresetn] \
     [get_bd_pins axi_dma_0/axi_resetn] \
     [get_bd_pins axis_fifo/s_axis_aresetn] \
     [get_bd_pins axi_gp0_ic/S00_ARESETN] \
     [get_bd_pins axi_gp0_ic/M00_ARESETN] \
     [get_bd_pins axi_gp0_ic/M01_ARESETN] \
+    [get_bd_pins axi_gp0_ic/M02_ARESETN] \
     [get_bd_pins axi_hp0_ic/S00_ARESETN] \
     [get_bd_pins axi_hp0_ic/S01_ARESETN] \
     [get_bd_pins axi_hp0_ic/M00_ARESETN]
 
 # ---------------- Interrupts ----------------
-connect_bd_net [get_bd_pins axi_dma_0/mm2s_introut] [get_bd_pins irq_concat/In0]
-connect_bd_net [get_bd_pins axi_dma_0/s2mm_introut] [get_bd_pins irq_concat/In1]
+connect_bd_net [get_bd_pins pltimer_0/irq]          [get_bd_pins irq_concat/In0]
+connect_bd_net [get_bd_pins axi_dma_0/mm2s_introut] [get_bd_pins irq_concat/In1]
+connect_bd_net [get_bd_pins axi_dma_0/s2mm_introut] [get_bd_pins irq_concat/In2]
 connect_bd_net [get_bd_pins irq_concat/dout]        [get_bd_pins ps7/IRQ_F2P]
 
 # ---------------- Addresses ----------------
@@ -200,6 +211,7 @@ proc set_seg {pattern offset range} {
 }
 # What the CPU sees (the device tree "reg" values must match).
 set_seg ps7/Data/SEG_axiregs_0_*  $regs_addr 4K
+set_seg ps7/Data/SEG_pltimer_0_*  $timer_addr 4K
 set_seg ps7/Data/SEG_axi_dma_0_*  $dma_addr  64K
 # What the DMA sees: all 1 GB of DDR. A smaller window would make the
 # interconnect reject (DECERR) buffers Linux places above it.

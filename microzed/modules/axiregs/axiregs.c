@@ -15,7 +15,7 @@
  *   reg0, reg1   read/write (decimal or 0x hex)
  *   sum          read: reg0 + reg1, computed by the PL
  *   count        read: free-running 100 MHz counter
- *   id           read: 0x4d5a0201 (project 02 design) or 0x4d5a0401 (project 04)
+ *   id           read: 0x4d5a0201 (project 02 and 03 designs) or 0x4d5a0401 (project 04)
  *
  * Load the bitstream BEFORE this driver (S40axiregs does both). Reading a PL
  * address with no logic behind it hangs the CPU, so probe() first asks the

@@ -37,6 +37,20 @@ else
   PL="<tr><td colspan=2>axiregs driver not loaded</td></tr>"
 fi
 
+# PL timer (project 03), if its driver is bound.
+PT=/sys/bus/platform/drivers/pltimer/43c10000.pltimer
+if [ -r $PT/ticks ]; then
+  TIMER="<tr><td>Running</td><td>$(cat $PT/enable)</td></tr>
+<tr><td>Period</td><td>$(cat $PT/period_us) &micro;s</td></tr>
+<tr><td>Interrupts handled</td><td>$(cat $PT/ticks)</td></tr>
+<tr><td>PL ticks (since start)</td><td>$(cat $PT/pl_ticks)</td></tr>
+<tr><td>Missed</td><td>$(cat $PT/missed)</td></tr>
+<tr><td>Interval (ns)</td><td>$(cut -d' ' -f3-8 $PT/stats)</td></tr>
+<tr><td>/proc/interrupts</td><td>$(awk '/pltimer/{print $2+$3}' /proc/interrupts)</td></tr>"
+else
+  TIMER="<tr><td colspan=2>pltimer driver not loaded</td></tr>"
+fi
+
 # Last AXI DMA loopback result from the dmaloop driver (project 04), if bound.
 DL=/sys/bus/platform/devices/dmaloop
 if [ -r $DL/result ]; then
@@ -69,6 +83,10 @@ done)
 <h3>PL registers (0x43C00000)</h3>
 <table>
 $PL
+</table>
+<h3>PL timer (0x43C10000, IRQ_F2P[0])</h3>
+<table>
+$TIMER
 </table>
 <p>DMA loopback, last run: $DMA</p>
 <p>LED D3: <b>$LED</b></p>
