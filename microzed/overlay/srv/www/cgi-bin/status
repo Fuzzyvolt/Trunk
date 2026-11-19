@@ -68,6 +68,11 @@ if [ -r $AS/status ]; then
       s["blocks"], s["overruns"], s["pl_dropped"]}' $AS/status)"
 else
   ADC="adcstream driver not loaded"
+  # Project 07: the IIO driver (adciio) instead?
+  for d in /sys/bus/iio/devices/iio:device*; do
+    [ "$(cat $d/name 2>/dev/null)" = adcsim ] || continue
+    ADC="IIO device ${d##*/} (adciio): $(cat $d/sampling_frequency) Sa/s, $(cat $d/in_voltage0_signal_mode) $(cat $d/in_voltage0_signal_frequency) Hz, buffer $( [ "$(cat $d/buffer/enable)" = 1 ] && echo running || echo stopped), PL dropped $(cat $d/pl_dropped)"
+  done
 fi
 
 cat << HTML

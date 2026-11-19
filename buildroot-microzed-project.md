@@ -1,6 +1,6 @@
 # Buildroot + QEMU + MicroZed: project summary
 
-Last updated: 2026-11-19 (project 06 done: modules and programs as Buildroot packages, modprobe)
+Last updated: 2026-11-19 (project 07 done: the simulated ADC as an IIO device, iio_readdev, no loss up to 25 MSa/s)
 
 Load this file at the start of a new session to continue the project.
 
@@ -81,7 +81,7 @@ Harmless boot messages:
 
 ## Current state (where we stopped)
 
-As of 2026-11-18: **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and our own kernel driver (`myled_irq`, loaded at boot) all work. Project 02 works too: our own AXI register block in the PL, programmed from Linux at boot, with a driver and sysfs files (see "AXI register block" below). Project 03 works: a timer in the PL interrupts Linux every N µs, `/dev/pltimer` blocks until the next tick (see "PL timer with interrupt" below). Project 04 works: an AXI DMA loops buffers DDR -> PL FIFO -> DDR through the kernel's DMA engine framework, up to 393 MB/s (see "AXI DMA loopback" below). Project 05 works: a simulated ADC in the PL streams samples through the DMA into a ring of DDR buffers, read from `/dev/adcstream`, with a live web chart; zero loss at 1 MSa/s for 5 minutes; with every sample checked, no loss up to 25 MSa/s; zero-copy (mmap) reaches the DMA's 98 MSa/s (see "DMA data stream" below).** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver), `myled-dt` (device tree platform driver) and `myled-irq` (button interrupt, blocking `/dev/mybutton`) also work.
+As of 2026-11-18: **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and our own kernel driver (`myled_irq`, loaded at boot) all work. Project 02 works too: our own AXI register block in the PL, programmed from Linux at boot, with a driver and sysfs files (see "AXI register block" below). Project 03 works: a timer in the PL interrupts Linux every N µs, `/dev/pltimer` blocks until the next tick (see "PL timer with interrupt" below). Project 04 works: an AXI DMA loops buffers DDR -> PL FIFO -> DDR through the kernel's DMA engine framework, up to 393 MB/s (see "AXI DMA loopback" below). Project 05 works: a simulated ADC in the PL streams samples through the DMA into a ring of DDR buffers, read from `/dev/adcstream`, with a live web chart; zero loss at 1 MSa/s for 5 minutes; with every sample checked, no loss up to 25 MSa/s; zero-copy (mmap) reaches the DMA's 98 MSa/s (see "DMA data stream" below). Project 06: modules and programs are Buildroot packages (`modprobe`). Project 07 works: the same ADC as a standard IIO device `adcsim` (`iio_info`, `iio_readdev`, libiio 0.26), no loss up to 25 MSa/s (see "The ADC as an IIO device" below).** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver), `myled-dt` (device tree platform driver) and `myled-irq` (button interrupt, blocking `/dev/mybutton`) also work.
 
 1. `~/br-microzed/.config` has: `BR2_EXTERNAL` = `/home/fabio/microzed-linux/microzed/br2-external` with `BR2_PACKAGE_MICROZED_APPS=y` and `BR2_PACKAGE_MICROZED_MODULES=y` (project 06), kernel config fragment `/home/fabio/microzed-linux/microzed/configs/linux.fragment` (`CONFIG_XILINX_DMA=m`), `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), **ethtool**, a root password, `BR2_SYSTEM_DHCP="eth0"`, `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`, and the BusyBox fragment `/home/fabio/mz-busybox.fragment`.
 2. GPIO: `gpiodetect` shows `gpiochip0 [zynq_gpio] (118 lines)` (lines 0-53 = MIO, 54-117 = EMIO). LED D3 and button PB1 are owned by the `myled_irq` kernel driver (`/dev/myled`, `/dev/mybutton`), loaded at boot by `/etc/init.d/S30myled`.
@@ -382,6 +382,61 @@ microzed/br2-external/            BR2_EXTERNAL tree, name MICROZED
 - Not done (optional): automatic module loading from the device tree (`MODULE_DEVICE_TABLE` aliases + mdev/eudev). Fine for `myled_irq`; the PL drivers must still wait for the bitstream.
 - The per-module Makefiles in `modules/*/` still work for quick experiments (`insmod /root/x.ko`); `make clean` in `microzed/` removes their leftovers.
 
+### The ADC as an IIO device (project 07, done 2026-11-19)
+
+```
+adcsim (PL) --> FIFO --> AXI DMA S2MM --> IIO DMA engine buffer --> /dev/iio:deviceN --> iio_readdev, adcread -i
+0x43C20000                (xilinx_dma)     (kernel helper, 2 blocks)   + /sys/bus/iio/devices/iio:deviceN/
+```
+
+Status: done 2026-11-19 on board 2. Compiled in the cloud session against linux-xlnx `xlnx_rebase_v6.12_LTS` (6.12.70) with `xilinx_zynq_defconfig` + `configs/linux.fragment` (ARM cross-compiler, `W=1`, no warnings; full kernel build, `depends=industrialio-buffer-dmaengine`), then tested on the board. One bug found and fixed on the board (stop order, below).
+
+Results (board 2, second version of the driver):
+- `iio_info`: `iio:device1: adcsim (buffer capable)`, `voltage0: (input, index: 0, format: le:s16/32>>0)`, `scale 0.030517578`, `signal_frequency 1000`, `signal_mode sine`, `signal_mode_available sine saw`, plus `block_samples`, `pl_dropped`, `pl_packets`, `pl_samples`, `sampling_frequency`.
+- `iio_readdev -b 8192 -s 1000000 adcsim > /tmp/adc.bin`: `adcread -f` 999,424 samples (122 whole blocks), `lost=0`. On the laptop `tools/iio_check.py --plot`: lost 0, 1000 Hz, clean sine.
+- `adcread -i -t 30`: 1 MSa/s, then 5 MSa/s set through `sampling_frequency` while streaming: 0 lost, 0 PL drops.
+- `adciio-bench 10 16384` (64 KiB blocks, every sample checked):
+
+| Rate | Measured Sa/s | MB/s | Lost | PL dropped | CPU % |
+|---|---|---|---|---|---|
+| 100 k | 99,995 | 0.4 | 0 | 0 | 0 |
+| 1 M | 999,958 | 4.0 | 0 | 0 | 1 |
+| 5 M | 4,999,751 | 20.0 | 0 | 0 | 9 |
+| 10 M | 9,999,510 | 40.0 | 0 | 0 | 19 |
+| 14.3 M | 14,285,116 | 57.1 | 0 | 0 | 28 |
+| 20 M | 19,998,937 | 80.0 | 0 | 0 | 39 |
+| 25 M | 24,998,902 | 100.0 | 0 | 0 | 49 |
+| 33 M | 27,387,046 | 109.5 | 59.4 M | 59.4 M | 50 |
+| 50 M | 27,554,181 | 110.2 | 224 M | 224 M | 50 |
+| 100 M | 27,517,095 | 110.1 | 725 M | 725 M | 50 |
+
+- **Same limit as project 05's best `read()` path** (no loss up to 25 MSa/s, ceiling ~27.5 MSa/s = 110 MB/s vs 26.6), with the stock kernel buffer and only two DMA blocks. The limit is again one core at 100% (adcread). 64 KiB blocks + the 8192-word PL FIFO are enough slack.
+- `lost` (sequence numbers) and `pl_dropped` (PL counter) agree: with the IIO buffer every loss is a PL drop.
+
+What IIO is: the kernel's framework for ADCs, DACs and sensors. The driver describes its channels (type, sign, bits, scale); the IIO core makes the sysfs files, the `/dev/iio:deviceN` node and the buffer. Generic tools (libiio: `iio_info`, `iio_attr`, `iio_readdev`) then work with any IIO ADC. The XADC is already one (`iio:device0`, name `xadc`).
+
+Files (all in `microzed/`):
+- `modules/adciio/adciio.c`: platform driver, same compatible `microzed,adcstream` as adcstream (a compatible names the hardware, not the driver; whichever module is loaded binds). IIO device name `adcsim`, one channel `in_voltage0`: `le:s16/32>>0` (16-bit signed value in a 32-bit word; the top 16 bits still carry the sequence number). Attributes: `sampling_frequency` (+ `_available`, writable while streaming), `in_voltage0_scale` (1000/2^15 mV per LSB, a simulated ±1 V range), our own `in_voltage0_signal_frequency`, `in_voltage0_signal_mode` (`sine`/`saw`, an `IIO_ENUM`), `pl_samples`, `pl_dropped`, `pl_packets`, `block_samples`.
+- `configs/linux.fragment`: `CONFIG_IIO_BUFFER_DMA=m`, `CONFIG_IIO_BUFFER_DMAENGINE=m` (checked: `olddefconfig` keeps both as `=m`; `CONFIG_IIO=y` and `CONFIG_IIO_BUFFER=y` already come from the XADC driver).
+- `overlay/etc/init.d/S40pl` + `overlay/etc/default/pl`: `ADC_DRIVER=adcstream` (default, web chart) or `adciio`. One-off: `/etc/init.d/S40pl stop; ADC_DRIVER=adciio /etc/init.d/S40pl start`.
+- `apps/adcread.c`: `-i` reads the IIO device itself (sets `scan_elements/in_voltage0_en`, `buffer/length` = 2 x block, `buffer/enable`), `-b` block size; `-f file` / `-f -` checks a recording or a pipe from `iio_readdev`.
+- `overlay/usr/bin/adciio-bench`: like `adcstream-bench`, through `adcread -i`.
+- `tools/iio_check.py` (laptop, numpy): lost samples, min/max, FFT frequency, sine fit, `--plot`.
+- Status web page shows the IIO device when adciio is loaded. `/scope.html` needs adcstream.
+
+How the buffer fits the hardware (read from the 6.12 source, `drivers/iio/buffer/industrialio-buffer-dma*.c`):
+- `iio_dmaengine_buffer_setup(dev, indio_dev, "rx")` requests the S2MM channel (from `dma-names`) and does all the DMA work: `dmaengine_prep_slave_single()` + submit + `issue_pending` per block, completion callback, hands done blocks to `read()`.
+- With `read()` (all libiio 0.x does) it uses exactly **two blocks** of `buffer/length / 2` samples, capped at 64 KiB (the DMA device's default max segment size): one filling, one being read. That matches xilinx_dma's simple-mode limit (one queued behind the running one).
+- Slack is one block. A late reader leaves the DMA with no block, the PL FIFO overflows: loss shows as `pl_dropped`, not as overruns.
+- Simple mode reports no residue, so the PL packet (TLAST every `PKT_LEN`) must be exactly one block. `postenable` reads the size the DMA was actually given (`blocks[0]->bytes_used`, from the queue struct in `buffer-dma.h`) and writes it to `PKT_LEN` before starting the PL. `preenable` refuses an odd `buffer/length` (half-sample blocks).
+- Stop: the core calls `predisable`, then `dmaengine_terminate_sync()` (halt + reset of the channel), then `postdisable`. `predisable` (second version): (1) `queue->active = false` under `queue->lock`, so blocks handed back by `read()` no longer go to the DMA; (2) DIV = 1 until no read() block is ACTIVE (< 1 ms); (3) stop the PL and empty its FIFO. The DMA is then idle (no hang in terminate) and nothing flows into it after its reset. Side effect: the last block(s) of a recording hold 100 MSa/s samples. A failure must never happen after the blocks are queued (`postenable` cannot fail): the core would then stop a DMA that waits for data.
+- Bug found on the board (first version): `predisable` only set DIV = 1 and the PL kept running until `postdisable`, i.e. through the DMA reset. Result: the first stream after a module load was clean, the second hung; dmesg `xilinx-vdma 40400000.dma: Channel ... has errors 10` = DMASR bit 4 DMAIntErr. Explanation (not proven in detail): words taken in by the DMA after its reset sit in front of the next stream's first packet, the packet no longer fits the block, the DMA flags an internal error, xilinx_dma sets `chan->err` and starts nothing until the next terminate, so `read()` waits forever. Fixed by stopping the PL before the core's terminate (same order as adcstream's stop).
+- Core quirk: the IIO DMA buffer never resets `fileio.next_dequeue`. After a stream that ended on an odd block (e.g. `iio_readdev -s 1000000`), the next stream reads block 1 before block 0 (the DMA fills 0 first): swapped first blocks, a burst of "lost" at the start (seen once: `lost 131068` in the first second, nothing after). `preenable` now sets it to 0.
+- A hung reader keeps `/dev/iio:deviceN` open: the next open gives "Device or resource busy" and `rmmod adciio` fails. Kill it (`killall adcread`) first.
+- libiio 0.26 (Buildroot 2026.02) writes `buffer/length` = 4 x the `-b` size, so `iio_readdev -b 8192` gives 64 KiB blocks. It prints "High-speed mode not enabled": expected (that is ADI's out-of-tree mmap interface). `buffer/watermark` is read-only here; libiio accepts that.
+
+Buildroot setup for this project (laptop, once): `make menuconfig` in `~/br-microzed` -> Target packages -> Libraries -> Hardware handling -> `libiio`, with "Install test programs" on (`iio_info`, `iio_attr`, `iio_readdev`, ...); the USB and serial backends can be turned off. "IIO Daemon" (iiod) is optional: it would let the laptop use libiio over the network (`iio_info -u ip:10.0.0.134`). Then `make linux-reconfigure` (kernel fragment) and `make flash` in `microzed/`.
+
 ### Repo workflow (`~/microzed-linux/microzed`)
 
 All source files now live in the git repo, in `microzed/` (see `microzed/README.md`). Claude writes files there; the laptop gets them with git.
@@ -559,10 +614,16 @@ The next projects are written as self-contained briefs in `microzed/projects/` (
 4. ~~`04-axi-dma-loopback.md`: AXI DMA loopback with the DMA engine framework.~~ Done 2026-11-18 (393 MB/s at 1 MiB).
 5. ~~`05-dma-data-stream.md`: simulated ADC stream to a live web chart.~~ Done 2026-11-19 (zero loss at 1 MSa/s for 5 min, up to 14 MSa/s).
 6. `06-buildroot-package.md`: build our modules and programs as Buildroot packages, `modprobe`. Done 2026-11-19.
-7. `07-iio-adc-driver.md`: the ADC stream as a standard IIO device (libiio tools, `iio_readdev`).
+7. ~~`07-iio-adc-driver.md`: the ADC stream as a standard IIO device (libiio tools, `iio_readdev`).~~ Done 2026-11-19 (no loss up to 25 MSa/s).
 8. `08-network-stream.md`: every sample to the laptop over TCP, then UDP; Python receiver that checks, records, plots and runs an FFT. The web page stays as the status view; this is the real data channel.
 
-Next session: `07-iio-adc-driver.md`, then 08. Later: a real sensor once a MicroHeader breakout is available (SPI ADC or pressure sensor sampled by the PL in place of adcsim, same driver); cached DMA buffers, scatter-gather, FIR filter in the PL, QSPI boot, read-only rootfs, watchdog, FreeRTOS/AMP (see "Longer roadmap").
+Next session: `08-network-stream.md`. Its receiver could use the IIO device: iiod (libiio's network daemon, a Buildroot option) serves it over TCP, `iio_readdev -u ip:10.0.0.134 adcsim` on the laptop; compare with our own TCP/UDP sender.
+
+Not yet tried in project 07 (optional):
+- iiod on the board + libiio on the laptop (`iio_info -u ip:10.0.0.134`).
+- Scale the "adcsim" scan type to what a real ADC part would report, and a timestamp (needs a software timestamp per block).
+- More than two blocks: only with the DMABUF interface (libiio 1.x) or scatter-gather.
+- Upstream report: the IIO DMA buffer never resets `fileio.next_dequeue` (we reset it in `preenable`). Later: a real sensor once a MicroHeader breakout is available (SPI ADC or pressure sensor sampled by the PL in place of adcsim, same driver); cached DMA buffers, scatter-gather, FIR filter in the PL, QSPI boot, read-only rootfs, watchdog, FreeRTOS/AMP (see "Longer roadmap").
 
 Not yet tried in project 05 (optional):
 - ~~`mmap()` of the ring.~~ Done, see "mmap follow-up". Still open: cached buffers + `dma_sync_single_for_cpu()` (fast per-sample reads with zero copy); a second thread so copy and processing use both cores; NEON for min/max/sum.
@@ -641,3 +702,11 @@ Note: most PL (FPGA) pins only reach the MicroHeaders on the underside, so PL I/
 - `*_SITE_METHOD = local`: Buildroot copies the source once and never notices edits; `make <pkg>-rebuild` copies it again. Exclude build leftovers with `<PKG>_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS`.
 - An old file in the overlay overrides the package's version (the overlay is copied last): remove retired programs and modules from `~/mz-overlay` when they move into a package.
 - Measure before optimising: splitting the time with `-s`/`-m` showed the per-sample loop, not the copy, was the bottleneck.
+- IIO: describe the hardware (channels, scan type, scale) and let the core make sysfs, `/dev/iio:deviceN` and the buffer; generic tools (`iio_info`, `iio_readdev`) work at once. Kernel helpers for DMA ADCs: `iio_dmaengine_buffer_setup()` + `iio_buffer_setup_ops`.
+- Read the helper's source before trusting it with your DMA: the IIO DMA buffer uses two blocks for `read()`, capped at 64 KiB (`dma_get_max_seg_size`), and calls `dmaengine_terminate_sync()` on stop.
+- With an S2MM DMA, stop the data source *before* the DMA is reset, and only when the DMA holds no buffer. Data that arrives after the reset stays in the DMA and breaks the next start (`has errors 10` = DMAIntErr, the next reader waits forever).
+- A failing stop test needs two runs in a row: the first stream after a module load was fine; only the second one hung.
+- A compatible string names the hardware, not the driver: two drivers can match one node; load only one.
+- A reader stuck in `read()` keeps the device open: "Device or resource busy" on the next open, `rmmod` fails. `killall` it first.
+- Recent OpenSSH `scp` uses SFTP, which Dropbear does not have: use `scp -O`.
+- libiio 0.x on a mainline kernel prints "High-speed mode not enabled": harmless (ADI's out-of-tree mmap interface).

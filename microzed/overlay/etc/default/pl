@@ -1,0 +1,5 @@
+# Settings for /etc/init.d/S40pl (project 07).
+# Driver for the simulated ADC (project 05 bitstream): one of
+#   adcstream   /dev/adcstream, web chart /scope.html (project 05)
+#   adciio      standard IIO device "adcsim": iio_info, iio_readdev, adcread -i
+ADC_DRIVER=adcstream
