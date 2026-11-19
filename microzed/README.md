@@ -25,12 +25,13 @@ Source for the programs and the Buildroot rootfs overlay used in `buildroot-micr
 | `modules/myled/` | Character driver: `/dev/myled` controls LED D3 (`echo 1`, `echo 0`, `echo t`, `cat`) |
 | `overlay/` | Files copied into the board's root filesystem (mirrors `/`) |
 | `overlay/etc/init.d/S90httpd` | Starts BusyBox httpd at boot |
-| `overlay/etc/init.d/S30myled` | Loads the myled_irq driver at boot (`/lib/modules/myled/myled_irq.ko`) |
+| `overlay/etc/init.d/S30myled` | Loads the myled_irq driver at boot (`modprobe myled_irq`) |
 | `overlay/etc/init.d/S40pl` | Programs the PL with `/lib/firmware/pl.bin`, loads axiregs and pltimer, then xilinx_dma + dmaloop (project 04 design) or xilinx_dma + adcstream (project 05 design) |
 | `overlay/etc/network/interfaces` | eth0 DHCP with the fixed MAC `02:0a:35:00:00:01` |
 | `overlay/srv/www/cgi-bin/` | Web page: `status`, `control` (buttons), `index.cgi` (redirect for `/`), `adc` (data for `/scope.html`) |
 | `configs/busybox.fragment` | BusyBox options (httpd + CGI) |
-| `Makefile` | Build, copy to the overlay, or push to the board |
+| `Makefile` | Rebuild the packages in Buildroot, copy to the overlay, or push to the board |
+| `br2-external/` | Project 06: Buildroot external tree with two packages, `microzed-modules` (our kernel modules, installed in `/lib/modules/<version>/microzed/`) and `microzed-apps` (`hello`, `blink`, `adcread`) |
 | `fpga/` | FPGA (PL) sources: Verilog, Vivado Tcl scripts; projects are built outside the repo |
 | `projects/` | Briefs for the next projects (FPGA side), one per session |
 
@@ -50,14 +51,37 @@ After that, to get updates:
 cd ~/microzed-linux && git pull
 ```
 
+## Buildroot packages (one-time setup)
+
+Our kernel modules and programs are built by Buildroot, as packages in `br2-external/`. Buildroot builds the modules against its kernel, installs them in `/lib/modules/<kernel version>/microzed/` and runs `depmod`, so `modprobe myled_irq` works.
+
+Point the Buildroot build at the external tree (run on the laptop, once; Buildroot remembers the path in `~/br-microzed/.config`):
+
+```bash
+cd ~/br-microzed && make BR2_EXTERNAL=$HOME/microzed-linux/microzed/br2-external menuconfig
+```
+
+In menuconfig: "External options" -> enable `microzed-apps` (it selects `microzed-modules` and libgpiod). Save, then:
+
+```bash
+cd ~/microzed-linux/microzed && make clean && make flash
+```
+
+`make clean` removes old hand-built `.o`/`.ko` files from `modules/*/`.
+
 ## Use
 
 ```bash
 cd ~/microzed-linux/microzed
-make            # build the programs
-make push       # test on the running board right away (no re-flash)
-make overlay    # copy into ~/mz-overlay for the next image
+make            # rebuild the two packages in Buildroot (after editing modules/ or apps/)
+make push       # also copy them to the running board (no re-flash)
+make overlay    # copy overlay files and the bitstream into ~/mz-overlay
+make flash      # everything, then write the SD card
 ```
+
+Buildroot does not notice changes in `modules/` or `apps/`; `make` here runs `make microzed-modules-rebuild microzed-apps-rebuild` in `~/br-microzed`, which copies the sources again and rebuilds them.
+
+After a kernel change (`make linux-rebuild`, new kernel config fragment), run `make` here too: Buildroot does not rebuild packages that depend on the kernel by itself. A full `make clean && make` in `~/br-microzed` rebuilds everything in the right order.
 
 `make push` asks for the root password several times unless you set up a key with `ssh-copy-id root@10.0.0.134`.
 
@@ -156,17 +180,15 @@ grep myled /proc/interrupts  # interrupt count
 
 ## Driver at boot (current setup)
 
-- `make` also builds `modules/myled-irq/myled_irq.ko`.
-- `make overlay` / `make flash` install it as `/lib/modules/myled/myled_irq.ko`; `/etc/init.d/S30myled` loads it at boot with `insmod`.
-- `make push` stops and removes leddaemon on the board, unloads any myled module, copies the module, programs and scripts, and loads the driver.
+- The `microzed-modules` package installs `myled_irq.ko` in `/lib/modules/<kernel version>/microzed/`; `/etc/init.d/S30myled` loads it at boot with `modprobe myled_irq`.
+- `make push` stops and removes leddaemon on the board, unloads any myled module, copies the modules, programs and scripts, and loads the driver.
 - The web page writes to `/dev/myled` and reads the LED state from it.
-- By hand: `/etc/init.d/S30myled start|stop|restart`.
-- After a kernel change in Buildroot, rebuild the module (`make`): a module built for another kernel fails to load ("invalid module format").
+- By hand: `/etc/init.d/S30myled start|stop|restart`, or `modprobe myled_irq` / `rmmod myled_irq`.
 
 ## AXI register block (project 02)
 
 - Since project 03, the axiregs block is part of the project 03 bitstream (`mz03_pltimer.bin`), loaded by `/etc/init.d/S40pl`. The project 02 bitstream (`fpga/02-axiregs/build.tcl`, `axiregs.bin`) is no longer installed.
-- `make` builds `modules/axiregs/axiregs.ko`; `make overlay` / `make push` install it as `/lib/modules/axiregs/axiregs.ko`.
+- The `microzed-modules` package builds and installs `axiregs.ko` (like all our modules).
 - The driver needs the `axiregs@43c00000` device tree node: `make flash` after pulling (the post-image script adds it).
 
 On the board:
@@ -183,7 +205,7 @@ Never read `0x43C00000` (devmem or driver) before the bitstream is loaded: the C
 ## PL timer (project 03)
 
 - `fpga/03-pltimer/build.tcl` makes `~/vivado/mz03_pltimer/mz03_pltimer.bin` (axiregs + pltimer, see `fpga/README.md`).
-- `make` builds `modules/pltimer/pltimer.ko`; `make overlay` / `make push` install it as `/lib/modules/pltimer/pltimer.ko` and the bitstream as `/lib/firmware/pl.bin` (project 04's, once built).
+- `make overlay` / `make push` install the bitstream as `/lib/firmware/pl.bin` (the newest built design).
 - At boot, `/etc/init.d/S40pl` programs the PL, then loads axiregs and pltimer. By hand: `/etc/init.d/S40pl start|stop|restart`.
 - The driver needs the `pltimer@43c10000` node (with `interrupts = <0 29 4>`): `make flash` after pulling.
 

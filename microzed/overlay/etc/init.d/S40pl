@@ -23,6 +23,9 @@
 #   firmware file name; the kernel reads it from /lib/firmware/ and programs the PL
 #   state    "operating" once the PL runs
 # (fpgautil -b /lib/firmware/pl.bin does the same.)
+#
+# Our modules come from the Buildroot package microzed-modules
+# (/lib/modules/<kernel version>/microzed/), so modprobe loads them by name.
 
 FW=pl.bin
 MGR=/sys/class/fpga_manager/fpga0
@@ -66,19 +69,19 @@ case "$1" in
     done
     load_pl || exit 1
     for m in $MODS; do
-      load $m insmod /lib/modules/$m/$m.ko
+      load $m modprobe $m
     done
     id=$(cat $AXIREGS/id 2>/dev/null)
     case "$id" in
       0x4d5a04*)
         load xilinx_dma modprobe xilinx_dma || exit 1
-        load dmaloop insmod /lib/modules/dmaloop/dmaloop.ko || exit 1
+        load dmaloop modprobe dmaloop || exit 1
         [ -e /sys/bus/platform/drivers/dmaloop/dmaloop ] \
           || echo "dmaloop: loaded but not bound (DMA node disabled? see dmesg)"
         ;;
       0x4d5a05*)
         load xilinx_dma modprobe xilinx_dma || exit 1
-        load adcstream insmod /lib/modules/adcstream/adcstream.ko || exit 1
+        load adcstream modprobe adcstream || exit 1
         [ -e /sys/bus/platform/drivers/adcstream/43c20000.adcstream ] \
           || echo "adcstream: loaded but not bound (node missing or disabled? see dmesg)"
         ;;

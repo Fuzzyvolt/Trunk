@@ -1,8 +1,9 @@
 #!/bin/sh
 # Load/unload the myled_irq driver (LED D3 + button PB1, /dev/myled and /dev/mybutton).
 # The driver binds to the "myled" device tree node as soon as it is loaded.
+# It is installed by the Buildroot package microzed-modules in
+# /lib/modules/<kernel version>/microzed/, so modprobe finds it by name.
 
-MOD=/lib/modules/myled/myled_irq.ko
 NAME=myled_irq
 
 loaded() { grep -q "^$NAME " /proc/modules; }
@@ -12,7 +13,7 @@ case "$1" in
     printf "Loading %s: " $NAME
     if loaded; then
       echo "already loaded"
-    elif insmod $MOD; then
+    elif modprobe $NAME; then
       echo "OK"
     else
       echo "FAIL (see dmesg)"

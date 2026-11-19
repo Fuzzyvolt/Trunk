@@ -1,0 +1,19 @@
+config BR2_PACKAGE_MICROZED_MODULES
+	bool "microzed-modules"
+	depends on BR2_LINUX_KERNEL
+	help
+	  Our kernel modules, built against the Buildroot kernel and
+	  installed in /lib/modules/<kernel version>/microzed/, so
+	  depmod indexes them and modprobe finds them:
+
+	    myled_irq  LED D3 + button PB1 (/dev/myled, /dev/mybutton)
+	    axiregs    AXI register block in the PL (project 02)
+	    pltimer    PL timer interrupt, /dev/pltimer (project 03)
+	    dmaloop    AXI DMA loopback (project 04)
+	    adcstream  simulated ADC stream, /dev/adcstream (project 05)
+
+	  Also installs adcstream.h (the ioctl/mmap interface) in the
+	  staging tree for programs that use /dev/adcstream.
+
+comment "microzed-modules needs a Linux kernel to be built"
+	depends on !BR2_LINUX_KERNEL
