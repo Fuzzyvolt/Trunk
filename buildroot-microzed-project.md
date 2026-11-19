@@ -1,6 +1,6 @@
 # Buildroot + QEMU + MicroZed: project summary
 
-Last updated: 2026-11-19 (project 05 done)
+Last updated: 2026-11-19 (project 05 done, mmap follow-up)
 
 Load this file at the start of a new session to continue the project.
 
@@ -81,7 +81,7 @@ Harmless boot messages:
 
 ## Current state (where we stopped)
 
-As of 2026-11-18: **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and our own kernel driver (`myled_irq`, loaded at boot) all work. Project 02 works too: our own AXI register block in the PL, programmed from Linux at boot, with a driver and sysfs files (see "AXI register block" below). Project 03 works: a timer in the PL interrupts Linux every N µs, `/dev/pltimer` blocks until the next tick (see "PL timer with interrupt" below). Project 04 works: an AXI DMA loops buffers DDR -> PL FIFO -> DDR through the kernel's DMA engine framework, up to 393 MB/s (see "AXI DMA loopback" below). Project 05 works: a simulated ADC in the PL streams samples through the DMA into a ring of DDR buffers, read from `/dev/adcstream`, with a live web chart; zero loss at 1 MSa/s for 5 minutes and up to 14 MSa/s (see "DMA data stream" below).** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver), `myled-dt` (device tree platform driver) and `myled-irq` (button interrupt, blocking `/dev/mybutton`) also work.
+As of 2026-11-18: **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and our own kernel driver (`myled_irq`, loaded at boot) all work. Project 02 works too: our own AXI register block in the PL, programmed from Linux at boot, with a driver and sysfs files (see "AXI register block" below). Project 03 works: a timer in the PL interrupts Linux every N µs, `/dev/pltimer` blocks until the next tick (see "PL timer with interrupt" below). Project 04 works: an AXI DMA loops buffers DDR -> PL FIFO -> DDR through the kernel's DMA engine framework, up to 393 MB/s (see "AXI DMA loopback" below). Project 05 works: a simulated ADC in the PL streams samples through the DMA into a ring of DDR buffers, read from `/dev/adcstream`, with a live web chart; zero loss at 1 MSa/s for 5 minutes; with every sample checked, no loss up to 25 MSa/s; zero-copy (mmap) reaches the DMA's 98 MSa/s (see "DMA data stream" below).** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver), `myled-dt` (device tree platform driver) and `myled-irq` (button interrupt, blocking `/dev/mybutton`) also work.
 
 1. `~/br-microzed/.config` has: kernel config fragment `/home/fabio/microzed-linux/microzed/configs/linux.fragment` (`CONFIG_XILINX_DMA=m`), `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), **ethtool**, a root password, `BR2_SYSTEM_DHCP="eth0"`, `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`, and the BusyBox fragment `/home/fabio/mz-busybox.fragment`.
 2. GPIO: `gpiodetect` shows `gpiochip0 [zynq_gpio] (118 lines)` (lines 0-53 = MIO, 54-117 = EMIO). LED D3 and button PB1 are owned by the `myled_irq` kernel driver (`/dev/myled`, `/dev/mybutton`), loaded at boot by `/etc/init.d/S30myled`.
@@ -305,8 +305,8 @@ adcsim registers (`fpga/05-adc-stream/adcsim.v`, offsets from `0x43C20000`): CTR
 
 Files (all in `microzed/`):
 - `fpga/05-adc-stream/`: `adcsim.v`, `tb_adcsim.v`, `build.tcl` (output `~/vivado/mz05_adc/mz05_adc.bin`).
-- `modules/adcstream/adcstream.c`: owns the adcsim registers and is a DMA engine client for the S2MM channel. Ring of `nbuf` buffers (module parameter, default 8, each 256 KiB from CMA). `/dev/adcstream` (misc device, one reader): `read()` returns blocks of raw words, sleeps until one is ready, 0 at the end of the stream; `poll()`, `O_NONBLOCK`. sysfs in `/sys/bus/platform/devices/43c20000.adcstream/`: `enable`, `rate` (Sa/s), `freq`, `mode` (`sine`/`saw`), `block_samples` (64..65536, only while stopped), `blocks`, `overruns`, `pl_dropped`, `status`, `snapshot`. Starts at load: 1 MSa/s, 1 kHz sine, 4096-sample blocks.
-- `apps/adcread.c`: reads the stream, checks the sequence numbers, prints rate/min/max/mean/lost per second, `-t` seconds, `-c file.csv`, `-q` summary only.
+- `modules/adcstream/adcstream.c`: owns the adcsim registers and is a DMA engine client for the S2MM channel. Ring of `nbuf` buffers (module parameter, default 8, each 256 KiB from CMA). `/dev/adcstream` (misc device, one reader): `read()` returns blocks of raw words, sleeps until one is ready, 0 at the end of the stream; `poll()`, `O_NONBLOCK`. sysfs in `/sys/bus/platform/devices/43c20000.adcstream/`: `enable`, `rate` (Sa/s), `freq`, `mode` (`sine`/`saw`), `block_samples` (64..65536, only while stopped), `blocks`, `overruns`, `pl_dropped`, `status`, `snapshot`. Starts at load: 1 MSa/s, 1 kHz sine, 4096-sample blocks. Also zero copy: `mmap()` + `ioctl` (see "mmap follow-up" below); interface in `modules/adcstream/adcstream.h`.
+- `apps/adcread.c`: reads the stream, checks the sequence numbers, prints rate/min/max/mean/lost per second, `-t` seconds, `-c file.csv`, `-q` summary only, `-m` mmap (zero copy), `-s` skim (no min/max/mean).
 - `overlay/usr/bin/adcstream-bench [seconds] [block_samples]`: one line per rate (100 kSa/s .. 100 MSa/s).
 - `overlay/srv/www/scope.html` + `cgi-bin/adc`: live SVG chart (fetches JSON twice a second, no libraries) with rate/freq/mode/start/stop; the status page has a summary line and a link.
 - `board/post-image-dt.sh`: `adcstream@43c20000 { compatible = "microzed,adcstream"; reg; clocks = <&clkc 15>; fpga-mgr; dmas = <&axi_dma 1>; dma-names = "rx"; }`.
@@ -343,6 +343,26 @@ Results (board 2, 2026-11-19):
 - With 65536-sample blocks `lost` reads 0 even with overruns: the 16-bit sequence number wraps after exactly one block. Use `overruns`, or another block size.
 - The live chart works (`http://10.0.0.134/scope.html`).
 - Open: `status` once showed `pl_dropped=548` after the first bench (stream had run since boot at changing rates); not seen since. Watch it.
+
+mmap follow-up (2026-11-19):
+- What mmap is: the driver maps the DMA buffers into the program (`dma_mmap_coherent()`, read-only, one `mmap()` per buffer at offset `i * 256 KiB`), so data is never copied. Instead of `read()`, the program takes a block number with `ioctl(ADCSTREAM_IOC_GET)` and gives it back with `ADCSTREAM_IOC_PUT`. A held block is in no queue (bitmask `held`), so neither the DMA nor an overrun can reuse it; at most `nbuf - 3` held. `ADCSTREAM_IOC_INFO` gives nbuf, buffer size, block size. Same pattern as V4L2 video capture.
+- `adcstream-bench [seconds] [block_samples] [adcread options]` passes options to adcread. Use 32768-sample blocks: with 65536 a whole lost block wraps the 16-bit sequence number and does not show in `lost` (two lost 32768 blocks in a row don't either; `overruns` is the true count).
+- Bug on the way: `-m` first checked the unused `read()` buffer (constant min/max, `lost` ~65535 per sample). Test every mode on the board, not only the one the fake-data test covers.
+
+Bench, 32768-sample blocks, 10 s per rate:
+
+| adcread mode | No loss up to | Ceiling | CPU at 50 MSa/s |
+|---|---|---|---|
+| `read()` + check every sample (old loop) | 14.3 MSa/s | ~17 MSa/s (68 MB/s) | 49% |
+| `read()` only (`-s`) | 50 MSa/s | ~64 MSa/s (255 MB/s) | 40% |
+| mmap + check every sample (`-m`) | 5 MSa/s | ~6.5 MSa/s (26 MB/s) | 50% |
+| mmap only (`-m -s`) | 50 MSa/s | 98 MSa/s (392 MB/s, DMA limit) | 1% (3% at 100 M) |
+| `read()` + check, new loop | **25 MSa/s** | ~26.6 MSa/s (106 MB/s) | 50% |
+
+- The copy was not the main cost: the per-sample loop was.
+- **Uncached memory is slow to read word by word**: every load goes to DDR. The kernel's `copy_to_user()` reads it in bursts and the loop then runs on cached memory, so `read()` + check beats mmap + check by 4x. mmap pays off only when the program does not touch every sample (or with cached buffers + `dma_sync_single_for_cpu()`).
+- With mmap and no per-sample work the software is no longer a limit: 98 MSa/s with 3% CPU, every loss a PL drop (the DMA's 32 bit x 100 MHz).
+- Kept the simple option: `read()` with a cheaper loop. Sequence check once per block from the two end samples (exact, numbers only move forward), integer min/max/sum without branches (int32 block sum cannot overflow for <= 65536 samples), CSV in its own loop. Ceiling 17 -> 26.6 MSa/s, no loss 14.3 -> 25 MSa/s, about a third less CPU per sample. The limit is now one core at 100% (adcread is single-threaded).
 
 ### Repo workflow (`~/microzed-linux/microzed`)
 
@@ -525,7 +545,7 @@ The next projects are written as self-contained briefs in `microzed/projects/` (
 Next session: no brief is written after 06. Options: `06-buildroot-package.md`; a project 05 follow-up (below); or a real sensor once a MicroHeader breakout is available (SPI ADC or pressure sensor sampled by the PL in place of adcsim, same driver).
 
 Not yet tried in project 05 (optional):
-- `mmap()` of the ring so user space reads the DMA buffers directly (removes the 68 MB/s copy limit), or cached buffers + `dma_sync_single_for_cpu()`.
+- ~~`mmap()` of the ring.~~ Done, see "mmap follow-up". Still open: cached buffers + `dma_sync_single_for_cpu()` (fast per-sample reads with zero copy); a second thread so copy and processing use both cores; NEON for min/max/sum.
 - Scatter-gather mode (needs `c_include_sg 1` and the M_AXI_SG port on HP0): many buffers queued in hardware, no two-in-flight limit. Note: cyclic mode in xilinx_dma needs SG; in simple mode it does not work.
 - A bigger `nbuf` (module parameter) vs. overruns at 15..17 MSa/s.
 - `adcread`: count overruns into `lost` so 65536-sample blocks report honestly.
@@ -596,3 +616,5 @@ Note: most PL (FPGA) pins only reach the MicroHeaders on the underside, so PL I/
 - A streaming source that cannot wait (ADC) needs a FIFO big enough for the CPU's worst re-arm delay, and a ring with enough slack for the reader's worst pause. Bigger blocks = more slack and fewer interrupts.
 - Put a sequence number in every sample: it proves "no loss" end to end, independent of the driver's counters. Make the counter wider than the largest block, or whole-block losses hide.
 - Read the driver source of the DMA engine you use (here `drivers/dma/xilinx/xilinx_dma.c`) before designing a client: the API is generic, but each driver's behaviour is not.
+- Uncached (coherent) DMA memory: fine to copy in bulk, very slow to read word by word. Zero copy (mmap) only wins if the program does not read every sample from it; otherwise copy first (`read()`) or use cached buffers with explicit cache syncs.
+- Measure before optimising: splitting the time with `-s`/`-m` showed the per-sample loop, not the copy, was the bottleneck.

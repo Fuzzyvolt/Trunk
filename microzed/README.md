@@ -17,7 +17,7 @@ Source for the programs and the Buildroot rootfs overlay used in `buildroot-micr
 | `modules/pltimer/` | Project 03: PL timer driver, `/dev/pltimer` blocks until the next tick; sysfs `period_us`, `enable`, `ticks`, `pl_ticks`, `missed`, `stats` |
 | `modules/dmaloop/` | Project 04: DMA engine client, loops a buffer through the PL (sysfs `size`, `run`, `result`) |
 | `modules/adcstream/` | Project 05: simulated-ADC stream driver: DMA buffer ring, `/dev/adcstream` (blocks of samples), sysfs `enable`, `rate`, `freq`, `mode`, `block_samples`, `overruns`, `pl_dropped`, `status`, `snapshot` |
-| `apps/adcread.c` | Project 05: reads `/dev/adcstream`, checks for lost samples, prints rate/min/max/mean per second, optional CSV |
+| `apps/adcread.c` | Project 05: reads `/dev/adcstream`, checks for lost samples, prints rate/min/max/mean per second, optional CSV; `-m` zero copy, `-s` skim |
 | `overlay/usr/bin/adcstream-bench` | Project 05: runs `adcread` at rising sample rates to find the highest one with no loss |
 | `overlay/srv/www/scope.html`, `overlay/srv/www/cgi-bin/adc` | Project 05: live chart of the stream, with rate/frequency/mode settings |
 | `configs/linux.fragment` | Kernel options on top of `xilinx_zynq_defconfig` (`CONFIG_XILINX_DMA=m`) |
@@ -227,7 +227,8 @@ cat status
 adcread -t 60                 # 60 s, one line per second, summary at the end
 echo 5000000 > rate           # 5 MSa/s (100 MHz / 20)
 echo 0 > enable; echo 16384 > block_samples; echo 1 > enable
-adcstream-bench 10            # highest rate with no loss
+adcstream-bench 10 32768      # highest rate with no loss
+adcstream-bench 10 32768 -m -s   # zero copy, no per-sample work
 ```
 
 Live chart: `http://10.0.0.134/scope.html` (also linked from the status page).
