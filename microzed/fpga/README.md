@@ -13,6 +13,9 @@ outside the repo, in `~/vivado/<name>`, because they are large and full of gener
 | `03-pltimer/pltimer.v` | Project 03: AXI4-Lite timer with a level interrupt output |
 | `03-pltimer/tb_pltimer.v` | Testbench for it (passes in Icarus Verilog) |
 | `03-pltimer/build.tcl` | Project 03: PS + axiregs (`0x43C00000`) + pltimer (`0x43C10000`), `irq` -> `IRQ_F2P[0]`; builds `mz03_pltimer.bin` (tested, works on the board) |
+| `05-adc-stream/adcsim.v` | Project 05: simulated ADC: AXI4-Lite registers + AXI4-Stream output (sine or sawtooth, sample every DIV clocks, TLAST every PKT_LEN samples, drops counted) |
+| `05-adc-stream/tb_adcsim.v` | Testbench for it (passes in Icarus Verilog) |
+| `05-adc-stream/build.tcl` | Project 05: project 04 design with adcsim (`0x43C20000`) -> 8192-word FIFO -> DMA S2MM; axiregs ID `0x4D5A0501`; builds `mz05_adc.bin` (tested, works on the board) |
 | `04-dma-loopback/build.tcl` | Project 04: the project 03 design (axiregs ID `0x4D5A0401`) + AXI DMA at `0x40400000` with an AXI4-Stream FIFO loop, HP0 to DDR, DMA interrupts on `IRQ_F2P[1..2]`; builds `mz04_dma.bin` (tested, works on the board) |
 
 ## One-time setup (laptop)
@@ -127,3 +130,44 @@ cd ~/microzed-linux/microzed/fpga/04-dma-loopback && vivado -mode batch -source 
 Output in `~/vivado/mz04_dma/`: `mz04_dma.bit`, `mz04_dma.bin`, `mz04_dma.xsa`, `utilization.txt`.
 `make overlay` / `make push` in `microzed/` install `mz04_dma.bin` as `/lib/firmware/pl.bin`
 (they fall back to project 03's `mz03_pltimer.bin` if project 04 is not built).
+
+## Project 05: DMA data stream (simulated ADC)
+
+```
+CPU --GP0--> axi_gp0_ic --> axiregs_0 (0x43C00000), pltimer_0 (0x43C10000),
+                            axi_dma_0 registers (0x40400000), adcsim_0 (0x43C20000, new)
+adcsim_0 m_axis --> axis_fifo (8192 x 32 bit) --> axi_dma_0 S2MM --> HP0 --> DDR
+adcsim_0 fifo_aresetn --> axis_fifo reset (FLUSH empties the FIFO)
+interrupts as in project 04 (S2MM done = GIC 63)
+```
+
+adcsim registers (offsets from `0x43C20000`):
+
+| Offset | Name | Access | Content |
+|---|---|---|---|
+| 0x00 | CTRL | R/W | bit 0 EN, bit 1 SINE (0 = sawtooth), bit 2 FLUSH (FIFO reset, generator stopped) |
+| 0x04 | STATUS | R | bit 0 RUNNING (stays 1 after EN=0 until the packet is complete) |
+| 0x08 | DIV | R/W | clocks per sample (100 = 1 MSa/s) |
+| 0x0C | PKT_LEN | R/W | samples per packet (TLAST) = one DMA buffer |
+| 0x10 | PHASE_INC | R/W | frequency = rate x PHASE_INC / 2^32 |
+| 0x14 | SAMPLES | R | samples made since start |
+| 0x18 | DROPPED | R | samples dropped (stream not ready when one was due) |
+| 0x1C | PACKETS | R | packets sent |
+| 0x20 | ID | R | `0x4D5A0501` |
+
+Sample word: bits 31..16 sequence number (+1 per sample, dropped ones included), bits 15..0 signed value.
+
+Simulate:
+
+```bash
+cd ~/microzed-linux/microzed/fpga/05-adc-stream && iverilog -o /tmp/tb tb_adcsim.v adcsim.v && vvp /tmp/tb
+```
+
+Build:
+
+```bash
+cd ~/microzed-linux/microzed/fpga/05-adc-stream && vivado -mode batch -source build.tcl
+```
+
+Output in `~/vivado/mz05_adc/`: `mz05_adc.bit`, `mz05_adc.bin`, `mz05_adc.xsa`, `utilization.txt`.
+`make overlay` / `make push` install `mz05_adc.bin` as `/lib/firmware/pl.bin` (newest built design wins: 05, then 04, then 03).

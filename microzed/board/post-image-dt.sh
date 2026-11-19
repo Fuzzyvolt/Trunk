@@ -57,7 +57,18 @@
 #           dmas = <&axi_dma 0>, <&axi_dma 1>;
 #           dma-names = "tx", "rx";
 #       };
+#       adcstream@43c20000 {               /* project 05: simulated ADC + DMA client */
+#           compatible = "microzed,adcstream";
+#           reg = <0x43c20000 0x1000>;
+#           clocks = <&clkc 15>;
+#           fpga-mgr = <&devcfg>;
+#           dmas = <&axi_dma 1>;           /* S2MM only */
+#           dma-names = "rx";
+#       };
 #   };
+#
+# The project 04 and 05 designs have the same DMA at the same address, so the
+# DMA node serves both; S40pl loads the client that matches the bitstream.
 #
 # DANGER: the Xilinx DMA driver reads the DMA's registers as soon as it binds.
 # If it is built into the kernel (=y, the xilinx_zynq_defconfig default) it
@@ -83,6 +94,7 @@ AXIREGS=/axiregs@43c00000
 PLTIMER=/pltimer@43c10000
 DMA=/dma@40400000
 DMALOOP=/dmaloop
+ADCSTREAM=/adcstream@43c20000
 
 # Buildroot exports BUILD_DIR to post-image scripts. Find the kernel .config.
 KCONFIG=$(ls -d "${BUILD_DIR:-$HOME/br-microzed/build}"/linux-* 2>/dev/null \
@@ -176,7 +188,17 @@ for DTB in "$IMAGES"/*.dtb; do
   fdtput -t s "$DTB" $DMALOOP dma-names tx rx
   fdtput -t s "$DTB" $DMALOOP status $DMA_STATUS
 
-  echo "post-image-dt: /myled, $AXIREGS, $PLTIMER, $DMA ($DMA_STATUS), $DMALOOP set in $(basename "$DTB")"
+  # Project 05: adcsim registers + the DMA's S2MM channel.
+  fdtget "$DTB" $ADCSTREAM compatible >/dev/null 2>&1 || fdtput -c "$DTB" $ADCSTREAM
+  fdtput -t s "$DTB" $ADCSTREAM compatible "microzed,adcstream"
+  fdtput -t x "$DTB" $ADCSTREAM reg 43c20000 1000
+  fdtput -t u "$DTB" $ADCSTREAM clocks $CLKC_PH 15
+  fdtput -t u "$DTB" $ADCSTREAM fpga-mgr $DEVCFG_PH
+  fdtput -t u "$DTB" $ADCSTREAM dmas $DMA_PH 1
+  fdtput -t s "$DTB" $ADCSTREAM dma-names rx
+  fdtput -t s "$DTB" $ADCSTREAM status $DMA_STATUS
+
+  echo "post-image-dt: /myled, $AXIREGS, $PLTIMER, $DMA ($DMA_STATUS), $DMALOOP, $ADCSTREAM set in $(basename "$DTB")"
 done
 
 [ $found = 1 ] || { echo "post-image-dt: no .dtb in $IMAGES"; exit 1; }

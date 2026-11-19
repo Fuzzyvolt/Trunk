@@ -9,7 +9,7 @@ The order matters: each project builds on the ones before it.
 | 02 | [AXI register block](02-axi-registers.md) (done) | No |
 | 03 | [PL timer with interrupt](03-pl-timer-interrupt.md) (done) | No |
 | 04 | [AXI DMA loopback](04-axi-dma-loopback.md) (done) | No |
-| 05 | [DMA data stream (simulated ADC)](05-dma-data-stream.md) | No |
+| 05 | [DMA data stream (simulated ADC)](05-dma-data-stream.md) (done) | No |
 | 06 | [Buildroot package for our modules](06-buildroot-package.md) | No (optional, any time) |
 
 Later, with a MicroHeader breakout or carrier card (all PL pins only reach the MicroHeaders):

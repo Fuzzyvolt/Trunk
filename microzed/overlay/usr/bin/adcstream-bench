@@ -1,0 +1,62 @@
+#!/bin/sh
+# adcstream-bench [seconds] [block_samples] [adcread options]
+#
+# Runs adcread at rising sample rates and prints one line per rate: samples
+# lost, driver overruns, PL drops and CPU load. The highest rate with 0 lost
+# is the limit. Default 10 s per rate; block_samples changes the DMA buffer
+# size first (restarts the stream). Puts the old rate back at the end.
+#
+#   adcstream-bench             10 s per rate, current block size
+#   adcstream-bench 60 65536    60 s per rate, 64 Ki-sample (256 KiB) blocks
+#   adcstream-bench 10 32768 -m      zero copy (mmap) reader
+#   adcstream-bench 10 32768 -m -s   zero copy, block ends checked only
+# (Use 32768, not 65536, to compare "lost": with 65536-sample blocks a whole
+# lost block wraps the 16-bit sequence number exactly and does not show.)
+
+S=/sys/bus/platform/devices/43c20000.adcstream
+SECS=${1:-10}
+BS=$2
+OPTS=
+if [ $# -gt 2 ]; then shift 2; OPTS="$*"; fi
+# The PL clock is 99999999 Hz, so the top rate (DIV = 1) is 99999999, not 100000000.
+RATES="100000 1000000 2000000 5000000 10000000 15000000 20000000 25000000 33333333 50000000 99999999"
+
+[ -d $S ] || { echo "adcstream driver not loaded (PL design 05? see /etc/init.d/S40pl)"; exit 1; }
+
+if [ -n "$BS" ]; then
+  echo 0 > $S/enable
+  echo "$BS" > $S/block_samples || exit 1
+fi
+echo 1 > $S/enable
+OLD=$(cat $S/rate)
+
+# CPU busy % between two readings of /proc/stat ("cpu user nice system idle iowait irq softirq ...")
+cpu_snap() { awk '/^cpu /{print $2+$3+$4+$5+$6+$7+$8, $5+$6}' /proc/stat; }
+
+echo "block_samples $(cat $S/block_samples), nbuf $(cat /sys/module/adcstream/parameters/nbuf), $SECS s per rate, adcread options: ${OPTS:-none}"
+printf "%10s %11s %7s %9s %9s %10s %5s\n" rate Sa/s MB/s lost overruns pl_dropped cpu%
+for r in $RATES; do
+  if ! echo $r > $S/rate 2>/dev/null; then
+    echo "$r: rate rejected by the driver, skipped"
+    continue
+  fi
+  set -- $(cpu_snap); t0=$1; i0=$2
+  line=$(adcread -q -t "$SECS" $OPTS)
+  set -- $(cpu_snap); t1=$1; i1=$2
+  # summary seconds=.. rate=.. blocks=.. samples=.. lost=.. overruns=.. pl_dropped=.. Sa/s=.. MB/s=..
+  set -f
+  for kv in $line; do
+    case $kv in
+      rate=*) rate=${kv#*=} ;;
+      lost=*) lost=${kv#*=} ;;
+      overruns=*) ovr=${kv#*=} ;;
+      pl_dropped=*) drop=${kv#*=} ;;
+      Sa/s=*) sas=${kv#*=} ;;
+      MB/s=*) mbs=${kv#*=} ;;
+    esac
+  done
+  set +f
+  cpu=$(( (t1 - t0 - (i1 - i0)) * 100 / (t1 - t0 + 1) ))
+  printf "%10s %11s %7s %9s %9s %10s %5s\n" "$rate" "$sas" "$mbs" "$lost" "$ovr" "$drop" "$cpu"
+done
+echo "$OLD" > $S/rate
