@@ -10,7 +10,7 @@ The order matters: each project builds on the ones before it.
 | 03 | [PL timer with interrupt](03-pl-timer-interrupt.md) (done) | No |
 | 04 | [AXI DMA loopback](04-axi-dma-loopback.md) (done) | No |
 | 05 | [DMA data stream (simulated ADC)](05-dma-data-stream.md) (done) | No |
-| 06 | [Buildroot package for our modules](06-buildroot-package.md) | No |
+| 06 | [Buildroot package for our modules](06-buildroot-package.md) (done) | No |
 | 07 | [ADC stream as an IIO device](07-iio-adc-driver.md) | No |
 | 08 | [Stream samples to the laptop over the network](08-network-stream.md) | No |
 

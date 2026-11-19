@@ -1,0 +1,15 @@
+config BR2_PACKAGE_MICROZED_APPS
+	bool "microzed-apps"
+	depends on BR2_LINUX_KERNEL # microzed-modules (adcstream.h)
+	depends on BR2_TOOLCHAIN_HEADERS_AT_LEAST_4_8 # libgpiod
+	select BR2_PACKAGE_MICROZED_MODULES
+	select BR2_PACKAGE_LIBGPIOD
+	help
+	  Our programs, installed in /usr/bin:
+
+	    hello    cross-compile test
+	    blink    blinks LED D3 until PB1 is pressed (libgpiod v1)
+	    adcread  reads /dev/adcstream and checks every sample
+
+comment "microzed-apps needs a Linux kernel and headers >= 4.8"
+	depends on !BR2_LINUX_KERNEL || !BR2_TOOLCHAIN_HEADERS_AT_LEAST_4_8

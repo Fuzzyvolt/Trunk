@@ -1,0 +1,3 @@
+# Shown in menuconfig under "External options".
+source "$BR2_EXTERNAL_MICROZED_PATH/package/microzed-modules/Config.in"
+source "$BR2_EXTERNAL_MICROZED_PATH/package/microzed-apps/Config.in"

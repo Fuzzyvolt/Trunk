@@ -1,6 +1,6 @@
 # Buildroot + QEMU + MicroZed: project summary
 
-Last updated: 2026-11-19 (project 05 done, mmap follow-up; briefs 07, 08 added)
+Last updated: 2026-11-19 (project 06 done: modules and programs as Buildroot packages, modprobe)
 
 Load this file at the start of a new session to continue the project.
 
@@ -83,7 +83,7 @@ Harmless boot messages:
 
 As of 2026-11-18: **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and our own kernel driver (`myled_irq`, loaded at boot) all work. Project 02 works too: our own AXI register block in the PL, programmed from Linux at boot, with a driver and sysfs files (see "AXI register block" below). Project 03 works: a timer in the PL interrupts Linux every N µs, `/dev/pltimer` blocks until the next tick (see "PL timer with interrupt" below). Project 04 works: an AXI DMA loops buffers DDR -> PL FIFO -> DDR through the kernel's DMA engine framework, up to 393 MB/s (see "AXI DMA loopback" below). Project 05 works: a simulated ADC in the PL streams samples through the DMA into a ring of DDR buffers, read from `/dev/adcstream`, with a live web chart; zero loss at 1 MSa/s for 5 minutes; with every sample checked, no loss up to 25 MSa/s; zero-copy (mmap) reaches the DMA's 98 MSa/s (see "DMA data stream" below).** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver), `myled-dt` (device tree platform driver) and `myled-irq` (button interrupt, blocking `/dev/mybutton`) also work.
 
-1. `~/br-microzed/.config` has: kernel config fragment `/home/fabio/microzed-linux/microzed/configs/linux.fragment` (`CONFIG_XILINX_DMA=m`), `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), **ethtool**, a root password, `BR2_SYSTEM_DHCP="eth0"`, `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`, and the BusyBox fragment `/home/fabio/mz-busybox.fragment`.
+1. `~/br-microzed/.config` has: `BR2_EXTERNAL` = `/home/fabio/microzed-linux/microzed/br2-external` with `BR2_PACKAGE_MICROZED_APPS=y` and `BR2_PACKAGE_MICROZED_MODULES=y` (project 06), kernel config fragment `/home/fabio/microzed-linux/microzed/configs/linux.fragment` (`CONFIG_XILINX_DMA=m`), `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), **ethtool**, a root password, `BR2_SYSTEM_DHCP="eth0"`, `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`, and the BusyBox fragment `/home/fabio/mz-busybox.fragment`.
 2. GPIO: `gpiodetect` shows `gpiochip0 [zynq_gpio] (118 lines)` (lines 0-53 = MIO, 54-117 = EMIO). LED D3 and button PB1 are owned by the `myled_irq` kernel driver (`/dev/myled`, `/dev/mybutton`), loaded at boot by `/etc/init.d/S30myled`.
 3. Network: fixed MAC `02:0a:35:00:00:01`, so the board gets **10.0.0.134**. `ssh root@10.0.0.134` logs in with a key (no password).
 4. Web page: `http://10.0.0.134` (redirects to `/cgi-bin/status`): die temperature, all XADC voltage rails, uptime, load, memory, IP, kernel, LED state, and buttons (LED on/off/toggle, power off). Refreshes every 5 s.
@@ -364,6 +364,24 @@ Bench, 32768-sample blocks, 10 s per rate:
 - With mmap and no per-sample work the software is no longer a limit: 98 MSa/s with 3% CPU, every loss a PL drop (the DMA's 32 bit x 100 MHz).
 - Kept the simple option: `read()` with a cheaper loop. Sequence check once per block from the two end samples (exact, numbers only move forward), integer min/max/sum without branches (int32 block sum cannot overflow for <= 65536 samples), CSV in its own loop. Ceiling 17 -> 26.6 MSa/s, no loss 14.3 -> 25 MSa/s, about a third less CPU per sample. The limit is now one core at 100% (adcread is single-threaded).
 
+### Buildroot packages (project 06, done 2026-11-19)
+
+```
+microzed/br2-external/            BR2_EXTERNAL tree, name MICROZED
+  external.desc, Config.in, external.mk
+  package/microzed-modules/       kernel-module + generic-package, source = microzed/modules (local)
+  package/microzed-apps/          generic-package, source = microzed/apps (local)
+```
+
+- `microzed-modules`: builds `myled-irq axiregs pltimer dmaloop adcstream` (`MODULE_SUBDIRS`) against the Buildroot kernel, installs them with `INSTALL_MOD_DIR=microzed` in `/lib/modules/<version>/microzed/`. Buildroot's `depmod` runs in target-finalize (after all packages, before the overlay), so `modprobe` finds them. Also installs `adcstream.h` in staging (`usr/include/microzed/`), like a library header.
+- `microzed-apps`: `hello`, `blink` (`-lgpiod`), `adcread` (`-I$(STAGING_DIR)/usr/include/microzed`), into `/usr/bin`. Depends on libgpiod and microzed-modules; `leddaemon` is no longer built.
+- `S30myled` and `S40pl` use `modprobe <name>` instead of `insmod <path>`. S40pl still loads the PL drivers only after the bitstream (no automatic loading from the device tree, on purpose).
+- `microzed/Makefile`: `make` = `make microzed-modules-rebuild microzed-apps-rebuild` in `~/br-microzed` (`-rebuild` re-copies local sources; a plain `make` does not notice changes). `make push` runs Buildroot's host depmod on `target/` and copies the `.ko` files + `modules.*` to the board (BusyBox has `modprobe` but no `depmod`). `make overlay` removes the old `/lib/modules/{myled,axiregs,...}` folders and old program copies from `~/mz-overlay` (the overlay is copied last, so a stale `usr/bin/adcread` there would replace the package's).
+- Checked in the cloud session against a clone of Buildroot 2026.02.x (config parses, dependencies and hooks as expected), then on the laptop and board: `make clean && make flash` built both packages, the modules are in `target/lib/modules/<version>/microzed/`, they load at boot, and `rmmod myled_irq && modprobe myled_irq` works (LED toggles).
+- Day-to-day: edit `modules/` or `apps/`, then `make push` (quick test) or `make flash` (permanent). After a kernel change, run `make` in `microzed/` too (Buildroot does not rebuild packages that depend on the kernel by itself).
+- Not done (optional): automatic module loading from the device tree (`MODULE_DEVICE_TABLE` aliases + mdev/eudev). Fine for `myled_irq`; the PL drivers must still wait for the bitstream.
+- The per-module Makefiles in `modules/*/` still work for quick experiments (`insmod /root/x.ko`); `make clean` in `microzed/` removes their leftovers.
+
 ### Repo workflow (`~/microzed-linux/microzed`)
 
 All source files now live in the git repo, in `microzed/` (see `microzed/README.md`). Claude writes files there; the laptop gets them with git.
@@ -540,11 +558,11 @@ The next projects are written as self-contained briefs in `microzed/projects/` (
 3. ~~`03-pl-timer-interrupt.md`: PL timer interrupt, blocking read.~~ Done 2026-11-17.
 4. ~~`04-axi-dma-loopback.md`: AXI DMA loopback with the DMA engine framework.~~ Done 2026-11-18 (393 MB/s at 1 MiB).
 5. ~~`05-dma-data-stream.md`: simulated ADC stream to a live web chart.~~ Done 2026-11-19 (zero loss at 1 MSa/s for 5 min, up to 14 MSa/s).
-6. `06-buildroot-package.md`: build our modules and programs as Buildroot packages, `modprobe`.
+6. `06-buildroot-package.md`: build our modules and programs as Buildroot packages, `modprobe`. Done 2026-11-19.
 7. `07-iio-adc-driver.md`: the ADC stream as a standard IIO device (libiio tools, `iio_readdev`).
 8. `08-network-stream.md`: every sample to the laptop over TCP, then UDP; Python receiver that checks, records, plots and runs an FFT. The web page stays as the status view; this is the real data channel.
 
-Next session: `06-buildroot-package.md`, then 07, then 08. Later: a real sensor once a MicroHeader breakout is available (SPI ADC or pressure sensor sampled by the PL in place of adcsim, same driver); cached DMA buffers, scatter-gather, FIR filter in the PL, QSPI boot, read-only rootfs, watchdog, FreeRTOS/AMP (see "Longer roadmap").
+Next session: `07-iio-adc-driver.md`, then 08. Later: a real sensor once a MicroHeader breakout is available (SPI ADC or pressure sensor sampled by the PL in place of adcsim, same driver); cached DMA buffers, scatter-gather, FIR filter in the PL, QSPI boot, read-only rootfs, watchdog, FreeRTOS/AMP (see "Longer roadmap").
 
 Not yet tried in project 05 (optional):
 - ~~`mmap()` of the ring.~~ Done, see "mmap follow-up". Still open: cached buffers + `dma_sync_single_for_cpu()` (fast per-sample reads with zero copy); a second thread so copy and processing use both cores; NEON for min/max/sum.
@@ -619,4 +637,7 @@ Note: most PL (FPGA) pins only reach the MicroHeaders on the underside, so PL I/
 - Put a sequence number in every sample: it proves "no loss" end to end, independent of the driver's counters. Make the counter wider than the largest block, or whole-block losses hide.
 - Read the driver source of the DMA engine you use (here `drivers/dma/xilinx/xilinx_dma.c`) before designing a client: the API is generic, but each driver's behaviour is not.
 - Uncached (coherent) DMA memory: fine to copy in bulk, very slow to read word by word. Zero copy (mmap) only wins if the program does not read every sample from it; otherwise copy first (`read()`) or use cached buffers with explicit cache syncs.
+- Ship drivers as Buildroot packages (`BR2_EXTERNAL`, `$(eval $(kernel-module))` + `$(eval $(generic-package))`): they are built against the exact kernel and indexed by `depmod`, so `modprobe` works. Files added through the overlay are never indexed (depmod runs before the overlay).
+- `*_SITE_METHOD = local`: Buildroot copies the source once and never notices edits; `make <pkg>-rebuild` copies it again. Exclude build leftovers with `<PKG>_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS`.
+- An old file in the overlay overrides the package's version (the overlay is copied last): remove retired programs and modules from `~/mz-overlay` when they move into a package.
 - Measure before optimising: splitting the time with `-s`/`-m` showed the per-sample loop, not the copy, was the bottleneck.
