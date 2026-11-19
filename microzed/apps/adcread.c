@@ -240,8 +240,8 @@ int main(int argc, char **argv)
 			next_seq = last + 1;
 		}
 		for (long long i = 0; !skim && i < bs; i++) {
-			uint16_t seq = buf[i] >> 16;
-			int16_t v = (int16_t)(buf[i] & 0xffff);
+			uint16_t seq = blk[i] >> 16;
+			int16_t v = (int16_t)(blk[i] & 0xffff);
 
 			/* A jump in the sequence = samples lost (PL drop or overrun). */
 			if (have_seq && seq != next_seq)
