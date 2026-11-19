@@ -1,6 +1,6 @@
 # Buildroot + QEMU + MicroZed: project summary
 
-Last updated: 2026-11-19 (project 05 done, mmap follow-up)
+Last updated: 2026-11-19 (project 05 done, mmap follow-up; briefs 07, 08 added)
 
 Load this file at the start of a new session to continue the project.
 
@@ -540,9 +540,11 @@ The next projects are written as self-contained briefs in `microzed/projects/` (
 3. ~~`03-pl-timer-interrupt.md`: PL timer interrupt, blocking read.~~ Done 2026-11-17.
 4. ~~`04-axi-dma-loopback.md`: AXI DMA loopback with the DMA engine framework.~~ Done 2026-11-18 (393 MB/s at 1 MiB).
 5. ~~`05-dma-data-stream.md`: simulated ADC stream to a live web chart.~~ Done 2026-11-19 (zero loss at 1 MSa/s for 5 min, up to 14 MSa/s).
-6. `06-buildroot-package.md` (optional, any time): build our modules as Buildroot packages, `modprobe`.
+6. `06-buildroot-package.md`: build our modules and programs as Buildroot packages, `modprobe`.
+7. `07-iio-adc-driver.md`: the ADC stream as a standard IIO device (libiio tools, `iio_readdev`).
+8. `08-network-stream.md`: every sample to the laptop over TCP, then UDP; Python receiver that checks, records, plots and runs an FFT. The web page stays as the status view; this is the real data channel.
 
-Next session: no brief is written after 06. Options: `06-buildroot-package.md`; a project 05 follow-up (below); or a real sensor once a MicroHeader breakout is available (SPI ADC or pressure sensor sampled by the PL in place of adcsim, same driver).
+Next session: `06-buildroot-package.md`, then 07, then 08. Later: a real sensor once a MicroHeader breakout is available (SPI ADC or pressure sensor sampled by the PL in place of adcsim, same driver); cached DMA buffers, scatter-gather, FIR filter in the PL, QSPI boot, read-only rootfs, watchdog, FreeRTOS/AMP (see "Longer roadmap").
 
 Not yet tried in project 05 (optional):
 - ~~`mmap()` of the ring.~~ Done, see "mmap follow-up". Still open: cached buffers + `dma_sync_single_for_cpu()` (fast per-sample reads with zero copy); a second thread so copy and processing use both cores; NEON for min/max/sum.
