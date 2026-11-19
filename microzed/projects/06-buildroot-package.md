@@ -1,4 +1,4 @@
-# 06: Buildroot package for our modules (optional)
+# 06: Buildroot package for our modules
 
 ## Goal
 
@@ -16,10 +16,10 @@ Today the modules are built by our own Makefile and copied through the overlay, 
 ## Steps (outline)
 
 1. Create `microzed/br2-external/` with `external.desc`, `external.mk`, `Config.in`.
-2. Package `myled-irq` with Buildroot's kernel-module infrastructure (`$(eval $(kernel-module))` then `$(eval $(generic-package))`), source from the repo (`*_SITE_METHOD = local`).
-3. Package the user-space programs (`hello`, `blink`) as generic packages.
+2. Package the kernel modules with Buildroot's kernel-module infrastructure (`$(eval $(kernel-module))` then `$(eval $(generic-package))`), source from the repo (`*_SITE_METHOD = local`): `myled-irq`, then `axiregs`, `pltimer`, `dmaloop`, `adcstream` (projects 02-05).
+3. Package the user-space programs (`hello`, `blink`, `adcread`) as generic packages.
 4. Point Buildroot at it: `make BR2_EXTERNAL=/home/fabio/microzed-linux/microzed/br2-external menuconfig` (remembered after the first time), enable the packages.
-5. Replace `insmod` with `modprobe myled_irq` in `S30myled`, or enable mdev so the module loads automatically from the device tree `compatible` (modalias).
+5. Replace `insmod` with `modprobe` in `S30myled` and `S40pl`, or enable mdev so modules load automatically from the device tree `compatible` (modalias). S40pl must still load the PL drivers only after the bitstream.
 6. Update `microzed/Makefile` and the README so `make flash` uses the packages.
 
 ## Done when
