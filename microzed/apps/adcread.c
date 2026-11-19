@@ -11,6 +11,17 @@
  *   adcread -c /tmp/a.csv    also write the first 100000 samples as CSV (seq,value)
  *   adcread -c f.csv -n 5000 ... only the first 5000
  *   adcread -t 10 -q         only the summary line (used by adcstream-bench)
+ *   adcread -m               zero copy: mmap() the DMA buffers, take/return
+ *                            blocks with ioctl (see modules/adcstream/adcstream.h)
+ *   adcread -s               skim: check only the first and last sample of each
+ *                            block (sequence numbers only, no min/max/mean, no CSV).
+ *                            Shows what the transport alone can do.
+ *
+ * The four combinations measure where the time goes:
+ *   (none)  read() copy + every sample checked
+ *   -s      read() copy only
+ *   -m      every sample read straight from the (uncached) DMA buffer
+ *   -m -s   neither: only the hand-over of blocks
  *
  * The sequence number has 16 bits, so a loss of exactly 65536 samples (one
  * whole block of 65536) would not show; the driver's overrun counter, printed
@@ -28,6 +39,10 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+
+#include "adcstream.h"
 
 #ifndef DEV
 #define DEV   "/dev/adcstream"
@@ -91,18 +106,20 @@ int main(int argc, char **argv)
 	double seconds = 0, t0, t_last, t;
 	const char *csv_name = NULL;
 	long long csv_left = 100000;
-	int quiet = 0, opt, fd;
+	int quiet = 0, use_mmap = 0, skim = 0, opt, fd;
 	FILE *csv = NULL;
 	struct sigaction sa;
 
-	while ((opt = getopt(argc, argv, "t:c:n:q")) != -1) {
+	while ((opt = getopt(argc, argv, "t:c:n:qms")) != -1) {
 		switch (opt) {
 		case 't': seconds = atof(optarg); break;
 		case 'c': csv_name = optarg; break;
 		case 'n': csv_left = atoll(optarg); break;
 		case 'q': quiet = 1; break;
+		case 'm': use_mmap = 1; break;
+		case 's': skim = 1; break;
 		default:
-			fprintf(stderr, "usage: %s [-t seconds] [-c file.csv [-n samples]] [-q]\n", argv[0]);
+			fprintf(stderr, "usage: %s [-t seconds] [-c file.csv [-n samples]] [-q] [-m] [-s]\n", argv[0]);
 			return 2;
 		}
 	}
@@ -118,6 +135,10 @@ int main(int argc, char **argv)
 	if (!buf)
 		return 2;
 
+	if (csv_name && skim) {
+		fprintf(stderr, "-c needs every sample: not with -s\n");
+		return 2;
+	}
 	if (csv_name) {
 		csv = fopen(csv_name, "w");
 		if (!csv) {
@@ -139,6 +160,32 @@ int main(int argc, char **argv)
 		return 2;
 	}
 
+	/* mmap mode: map every ring buffer once; ring[i] is DMA buffer i. */
+	struct adcstream_info info;
+	const uint32_t **ring = NULL;
+	if (use_mmap) {
+		if (ioctl(fd, ADCSTREAM_IOC_INFO, &info) < 0) {
+			perror("ADCSTREAM_IOC_INFO (driver too old for -m?)");
+			return 2;
+		}
+		if (info.block_bytes != block_bytes) {
+			fprintf(stderr, "block size changed, run again\n");
+			return 2;
+		}
+		ring = calloc(info.nbuf, sizeof(*ring));
+		if (!ring)
+			return 2;
+		for (unsigned int i = 0; i < info.nbuf; i++) {
+			void *p = mmap(NULL, info.buf_size, PROT_READ, MAP_SHARED, fd,
+				       (off_t)i * info.buf_size);
+			if (p == MAP_FAILED) {
+				perror("mmap");
+				return 2;
+			}
+			ring[i] = p;
+		}
+	}
+
 	long long ovr0 = sysfs_num("overruns"), drop0 = sysfs_num("pl_dropped");
 	long long total = 0, lost = 0, blocks = 0;
 	/* Per-interval statistics */
@@ -149,22 +196,50 @@ int main(int argc, char **argv)
 	uint16_t next_seq = 0;
 
 	if (!quiet)
-		printf("%lld samples per block, rate %lld Sa/s. Ctrl-C to stop.\n", bs, rate);
+		printf("%lld samples per block, rate %lld Sa/s, %s, %s. Ctrl-C to stop.\n", bs, rate,
+		       use_mmap ? "mmap (zero copy)" : "read() (copy)",
+		       skim ? "skim (block ends only)" : "every sample checked");
 
 	t0 = t_last = now();
 	while (!stop) {
-		ssize_t r = read_block(fd, buf, block_bytes);
+		const uint32_t *blk;
+		__u32 idx = 0;
 
-		if (r <= 0) {
-			if (r < 0 && errno != EINTR)
-				perror("read");
-			if (r == 0)
-				fprintf(stderr, "end of stream (enable = 0?)\n");
-			break;
+		if (use_mmap) {
+			/* Take the oldest full block: no copy, only its number. */
+			if (ioctl(fd, ADCSTREAM_IOC_GET, &idx) < 0) {
+				if (errno == ENODATA)
+					fprintf(stderr, "end of stream (enable = 0?)\n");
+				else if (errno != EINTR)
+					perror("ADCSTREAM_IOC_GET");
+				break;
+			}
+			blk = ring[idx];
+		} else {
+			ssize_t r = read_block(fd, buf, block_bytes);
+
+			if (r <= 0) {
+				if (r < 0 && errno != EINTR)
+					perror("read");
+				if (r == 0)
+					fprintf(stderr, "end of stream (enable = 0?)\n");
+				break;
+			}
+			blk = buf;
 		}
 		blocks++;
 
-		for (long long i = 0; i < bs; i++) {
+		if (skim) {
+			/* Inside a block the numbers must run first .. first+bs-1. */
+			uint16_t first = blk[0] >> 16, last = blk[bs - 1] >> 16;
+
+			if (have_seq && first != next_seq)
+				lost_i += (uint16_t)(first - next_seq);
+			lost_i += (uint16_t)(last - (uint16_t)(first + bs - 1));
+			have_seq = 1;
+			next_seq = last + 1;
+		}
+		for (long long i = 0; !skim && i < bs; i++) {
 			uint16_t seq = buf[i] >> 16;
 			int16_t v = (int16_t)(buf[i] & 0xffff);
 
@@ -190,9 +265,19 @@ int main(int argc, char **argv)
 		}
 		n_i += bs;
 
+		/* Give the block back so the driver can reuse it for the DMA. */
+		if (use_mmap && ioctl(fd, ADCSTREAM_IOC_PUT, &idx) < 0) {
+			perror("ADCSTREAM_IOC_PUT");
+			break;
+		}
+
 		t = now();
 		if (t - t_last >= 1.0) {
-			if (!quiet)
+			if (!quiet && skim)
+				printf("t=%6.1f s  %9.0f Sa/s  lost %lld  overruns %lld  pl_dropped %lld\n",
+				       t - t0, n_i / (t - t_last), lost_i,
+				       sysfs_num("overruns") - ovr0, sysfs_num("pl_dropped") - drop0);
+			else if (!quiet)
 				printf("t=%6.1f s  %9.0f Sa/s  min %6d  max %6d  mean %8.1f  lost %lld  overruns %lld  pl_dropped %lld\n",
 				       t - t0, n_i / (t - t_last), vmin, vmax, sum / n_i, lost_i,
 				       sysfs_num("overruns") - ovr0, sysfs_num("pl_dropped") - drop0);
@@ -211,6 +296,9 @@ int main(int argc, char **argv)
 	total += n_i;
 	lost += lost_i;
 	t = now() - t0;
+	if (use_mmap)
+		for (unsigned int i = 0; i < info.nbuf; i++)
+			munmap((void *)ring[i], info.buf_size);
 	close(fd);
 	if (csv)
 		fclose(csv);

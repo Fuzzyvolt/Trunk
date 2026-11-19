@@ -51,6 +51,10 @@
  *   read()     whole or partial blocks of raw sample words; sleeps until a
  *              block is ready. Returns 0 (end of file) once the stream stops.
  *   poll()     readable when a block is waiting. O_NONBLOCK gives -EAGAIN.
+ *   mmap()     zero copy: each ring buffer mapped read-only into the program,
+ *   ioctl()    which then takes blocks with ADCSTREAM_IOC_GET and gives them
+ *              back with ADCSTREAM_IOC_PUT (see adcstream.h). A held block
+ *              is in no queue, so neither the DMA nor an overrun can touch it.
  *
  * sysfs files in /sys/bus/platform/devices/43c20000.adcstream/:
  *   enable          1 = stream on, 0 = off (on at load, module parameter autostart)
@@ -92,6 +96,8 @@
 #include <linux/uaccess.h>
 #include <linux/wait.h>
 
+#include "adcstream.h"
+
 /* Register offsets, same as adcsim.v */
 #define ADC_CTRL	0x00
 #define ADC_STATUS	0x04
@@ -113,6 +119,7 @@
 #define MAX_NBUF	32
 #define MIN_BLOCK	64
 #define MAX_BLOCK	65536			/* samples = 256 KiB per buffer */
+#define BUF_SIZE	(MAX_BLOCK * 4)		/* bytes per buffer (and per mmap) */
 #define DEF_BLOCK	4096
 #define SNAP_POINTS	256
 #define IN_FLIGHT	2			/* buffers with the DMA, see above */
@@ -170,6 +177,7 @@ struct adcstream {
 	struct mutex read_lock;
 	int cur;			/* buffer index, -1 = none */
 	u32 cur_off;			/* bytes already read from it */
+	u32 held;			/* mmap mode: bit i = buffer i taken with IOC_GET (under lock) */
 
 	wait_queue_head_t wq;		/* readers wait here for a full block */
 	atomic_t open;
@@ -239,6 +247,7 @@ static void adc_ring_reset(struct adcstream *as)
 	as->nfree = as->nbuf;
 	as->fhead = 0;
 	as->fcount = 0;
+	as->held = 0;
 }
 
 static void adc_full_push(struct adcstream *as, unsigned int idx)
@@ -495,6 +504,12 @@ static int adc_release(struct inode *inode, struct file *f)
 	if (as->cur >= 0)
 		as->freeq[as->nfree++] = as->cur;
 	as->cur = -1;
+	while (as->held) {		/* blocks taken with IOC_GET and never put back */
+		unsigned int i = __ffs(as->held);
+
+		as->held &= ~BIT(i);
+		as->freeq[as->nfree++] = i;
+	}
 	spin_unlock_irq(&as->lock);
 	mutex_unlock(&as->read_lock);
 
@@ -582,12 +597,137 @@ static __poll_t adc_poll(struct file *f, poll_table *wait)
 	return 0;
 }
 
+/*
+ * mmap(): map ONE ring buffer, chosen by the offset (buffer i at offset
+ * i * BUF_SIZE). Read-only: the program must never write into a buffer the
+ * DMA may fill. dma_mmap_coherent() maps it with the same uncached
+ * attributes the kernel uses, so CPU and DMA still see the same data.
+ */
+static int adc_mmap(struct file *f, struct vm_area_struct *vma)
+{
+	struct adcstream *as = file_as(f);
+	unsigned long pages = BUF_SIZE >> PAGE_SHIFT;
+	unsigned long idx = vma->vm_pgoff / pages;
+
+	if (vma->vm_pgoff % pages || idx >= as->nbuf ||
+	    vma->vm_end - vma->vm_start > BUF_SIZE)
+		return -EINVAL;
+	if (vma->vm_flags & VM_WRITE)
+		return -EPERM;
+	vm_flags_clear(vma, VM_MAYWRITE);	/* no mprotect(PROT_WRITE) later */
+
+	vma->vm_pgoff = 0;			/* offset inside this buffer */
+	return dma_mmap_coherent(as->dma_dev, vma, as->buf[idx], as->buf_dma[idx], BUF_SIZE);
+}
+
+/* Most blocks a program may hold: 2 stay with the DMA, 1 spare for overruns. */
+static unsigned int adc_max_held(struct adcstream *as)
+{
+	return as->nbuf - IN_FLIGHT - 1;
+}
+
+/* IOC_GET: like read(), but hands over the buffer number instead of a copy. */
+static long adc_ioc_get(struct adcstream *as, struct file *f, u32 __user *up)
+{
+	unsigned int idx;
+	long ret;
+
+	if (mutex_lock_interruptible(&as->read_lock))
+		return -ERESTARTSYS;
+	for (;;) {
+		bool stopped, err;
+
+		spin_lock_irq(&as->lock);
+		if (hweight32(as->held) >= adc_max_held(as)) {
+			spin_unlock_irq(&as->lock);
+			ret = -EBUSY;		/* PUT some back first */
+			break;
+		}
+		if (as->fcount) {
+			idx = adc_full_pop(as);
+			as->held |= BIT(idx);
+			spin_unlock_irq(&as->lock);
+			ret = put_user(idx, up);
+			if (ret) {		/* bad pointer: the program never learns idx */
+				spin_lock_irq(&as->lock);
+				as->held &= ~BIT(idx);
+				as->freeq[as->nfree++] = idx;
+				spin_unlock_irq(&as->lock);
+			}
+			break;
+		}
+		stopped = !as->running;
+		err = as->error;
+		spin_unlock_irq(&as->lock);
+
+		if (stopped) {
+			ret = err ? -EIO : -ENODATA;	/* ENODATA = end of stream */
+			break;
+		}
+		if (f->f_flags & O_NONBLOCK) {
+			ret = -EAGAIN;
+			break;
+		}
+		ret = wait_event_interruptible(as->wq, adc_readable(as));
+		if (ret)
+			break;
+	}
+	mutex_unlock(&as->read_lock);
+	return ret;
+}
+
+/* IOC_PUT: the program is done with buffer idx; it may go back to the DMA. */
+static long adc_ioc_put(struct adcstream *as, u32 __user *up)
+{
+	u32 idx;
+	long ret = 0;
+
+	if (get_user(idx, up))
+		return -EFAULT;
+	if (idx >= as->nbuf)
+		return -EINVAL;
+
+	spin_lock_irq(&as->lock);
+	if (as->held & BIT(idx)) {
+		as->held &= ~BIT(idx);
+		as->freeq[as->nfree++] = idx;
+	} else {
+		ret = -EINVAL;		/* not held (or the stream restarted since) */
+	}
+	spin_unlock_irq(&as->lock);
+	return ret;
+}
+
+static long adc_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
+{
+	struct adcstream *as = file_as(f);
+	void __user *up = (void __user *)arg;
+	struct adcstream_info info;
+
+	switch (cmd) {
+	case ADCSTREAM_IOC_INFO:
+		info.nbuf = as->nbuf;
+		info.buf_size = BUF_SIZE;
+		info.block_bytes = READ_ONCE(as->block_samples) * 4;
+		info.max_held = adc_max_held(as);
+		return copy_to_user(up, &info, sizeof(info)) ? -EFAULT : 0;
+	case ADCSTREAM_IOC_GET:
+		return adc_ioc_get(as, f, up);
+	case ADCSTREAM_IOC_PUT:
+		return adc_ioc_put(as, up);
+	default:
+		return -ENOTTY;		/* "inappropriate ioctl for device" */
+	}
+}
+
 static const struct file_operations adc_fops = {
 	.owner = THIS_MODULE,
 	.open = adc_open,
 	.release = adc_release,
 	.read = adc_read,
 	.poll = adc_poll,
+	.mmap = adc_mmap,
+	.unlocked_ioctl = adc_ioctl,
 };
 
 /* ------------------------------------------------------------------ */
@@ -898,7 +1038,7 @@ static void adc_action_free_bufs(void *data)
 
 	for (i = 0; i < as->nbuf; i++)
 		if (as->buf[i])
-			dma_free_coherent(as->dma_dev, MAX_BLOCK * 4, as->buf[i], as->buf_dma[i]);
+			dma_free_coherent(as->dma_dev, BUF_SIZE, as->buf[i], as->buf_dma[i]);
 }
 
 static void adc_action_stop(void *data)
@@ -986,7 +1126,7 @@ static int adcstream_probe(struct platform_device *pdev)
 	 */
 	as->dma_dev = as->rx->device->dev;
 	for (i = 0; i < as->nbuf; i++) {
-		as->buf[i] = dma_alloc_coherent(as->dma_dev, MAX_BLOCK * 4,
+		as->buf[i] = dma_alloc_coherent(as->dma_dev, BUF_SIZE,
 						&as->buf_dma[i], GFP_KERNEL);
 		if (!as->buf[i])
 			break;
@@ -997,7 +1137,7 @@ static int adcstream_probe(struct platform_device *pdev)
 	if (i < as->nbuf)
 		return dev_err_probe(dev, -ENOMEM,
 				     "cannot allocate %u x %u bytes of DMA memory (CMA too small?)\n",
-				     as->nbuf, MAX_BLOCK * 4);
+				     as->nbuf, BUF_SIZE);
 
 	ret = devm_add_action_or_reset(dev, adc_action_stop, as);
 	if (ret)

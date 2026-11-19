@@ -55,6 +55,9 @@ build:
 	mkdir -p build
 
 build/hello build/adcread: LDLIBS :=
+# adcread includes the driver's ioctl/mmap header
+build/adcread: CFLAGS += -Imodules/adcstream
+build/adcread: modules/adcstream/adcstream.h
 build/%: apps/%.c | build
 	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
 
