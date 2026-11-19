@@ -1,4 +1,5 @@
 # Project 05: DMA data stream from a simulated ADC.
+# Tested with Vivado 2026.1 (Basic): built first time; zero loss at 1 MSa/s for 5 min, up to 14 MSa/s.
 #
 # Run on the laptop (after "vivado-env"):
 #   cd ~/microzed-linux/microzed/fpga/05-adc-stream && vivado -mode batch -source build.tcl

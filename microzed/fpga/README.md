@@ -15,7 +15,7 @@ outside the repo, in `~/vivado/<name>`, because they are large and full of gener
 | `03-pltimer/build.tcl` | Project 03: PS + axiregs (`0x43C00000`) + pltimer (`0x43C10000`), `irq` -> `IRQ_F2P[0]`; builds `mz03_pltimer.bin` (tested, works on the board) |
 | `05-adc-stream/adcsim.v` | Project 05: simulated ADC: AXI4-Lite registers + AXI4-Stream output (sine or sawtooth, sample every DIV clocks, TLAST every PKT_LEN samples, drops counted) |
 | `05-adc-stream/tb_adcsim.v` | Testbench for it (passes in Icarus Verilog) |
-| `05-adc-stream/build.tcl` | Project 05: project 04 design with adcsim (`0x43C20000`) -> 8192-word FIFO -> DMA S2MM; axiregs ID `0x4D5A0501`; builds `mz05_adc.bin` (not yet built in Vivado) |
+| `05-adc-stream/build.tcl` | Project 05: project 04 design with adcsim (`0x43C20000`) -> 8192-word FIFO -> DMA S2MM; axiregs ID `0x4D5A0501`; builds `mz05_adc.bin` (tested, works on the board) |
 | `04-dma-loopback/build.tcl` | Project 04: the project 03 design (axiregs ID `0x4D5A0401`) + AXI DMA at `0x40400000` with an AXI4-Stream FIFO loop, HP0 to DDR, DMA interrupts on `IRQ_F2P[1..2]`; builds `mz04_dma.bin` (tested, works on the board) |
 
 ## One-time setup (laptop)
