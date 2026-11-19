@@ -78,7 +78,6 @@
 #include <linux/fpga/fpga-mgr.h>
 #include <linux/fs.h>
 #include <linux/io.h>
-#include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/math64.h>
 #include <linux/miscdevice.h>
@@ -107,7 +106,7 @@
 #define CTRL_EN		BIT(0)
 #define CTRL_SINE	BIT(1)
 #define CTRL_FLUSH	BIT(2)
-#define STATUS_RUNNING	BIT(0)
+#define STATUS_RUNNING	BIT(0)		/* unused: the stop no longer waits for the packet end */
 
 #define ADC_ID_VALUE	0x4D5A0501
 
@@ -159,6 +158,7 @@ struct adcstream {
 	bool running;			/* callbacks resubmit buffers only while true */
 	bool error;
 	bool reader;			/* /dev/adcstream is open */
+	unsigned int inflight;		/* buffers the DMA holds (0..2) */
 	u32 block_bytes;		/* fixed while running */
 	u8 freeq[MAX_NBUF];		/* stack of free buffers */
 	unsigned int nfree;
@@ -284,6 +284,7 @@ static int adc_submit(struct adcstream *as, unsigned int idx)
 	if (dma_submit_error(cookie))
 		return -EIO;
 	dma_async_issue_pending(as->rx);
+	as->inflight++;
 	return 0;
 }
 
@@ -319,8 +320,10 @@ static void adc_dma_done(void *param, const struct dmaengine_result *result)
 	int ret;
 
 	spin_lock_irqsave(&as->lock, flags);
+	if (as->inflight)
+		as->inflight--;
 	if (!as->running)
-		goto out;			/* stopping: buffers are being taken back */
+		goto out;			/* stopping: the DMA is being emptied */
 
 	if (result && result->result != DMA_TRANS_NOERROR) {
 		dev_err_ratelimited(as->dev, "DMA error %d, stream stopped\n", result->result);
@@ -359,7 +362,7 @@ fail:
 	as->error = true;
 out:
 	spin_unlock_irqrestore(&as->lock, flags);
-	wake_up_interruptible(&as->wq);
+	wake_up(&as->wq);		/* readers, and adc_stop() waiting for inflight == 0 */
 }
 
 /* ------------------------------------------------------------------ */
@@ -387,6 +390,7 @@ static int adc_start(struct adcstream *as)
 
 	spin_lock_irq(&as->lock);
 	adc_ring_reset(as);
+	as->inflight = 0;
 	as->block_bytes = as->block_samples * 4;
 	as->blocks = 0;
 	as->overruns = 0;
@@ -408,28 +412,42 @@ static int adc_start(struct adcstream *as)
 	return 0;
 }
 
+/*
+ * Stopping must leave the DMA with NO buffer before dmaengine_terminate_sync().
+ * terminate asks the channel to halt and waits for it, but an S2MM channel
+ * that holds a buffer waits for stream data and never halts. xilinx_dma's
+ * wait has a "1 s" timeout that is really years: readl_poll_timeout_atomic()
+ * with delay 0 counts only 1 ns per loop. So: stop feeding the DMA, let the
+ * generator fill what it still holds (at full speed, about 1 ms), and only
+ * then stop the PL and terminate. Found the hard way on the board.
+ */
 static void adc_stop(struct adcstream *as)
 {
-	u32 st;
-
 	if (!as->enabled)
 		return;
 
-	/*
-	 * EN = 0: the PL finishes the packet it is in (the DMA buffer in flight
-	 * gets its TLAST), then RUNNING drops. Wait up to 100 ms for that.
-	 */
-	adc_wr(as, ADC_CTRL, adc_ctrl_mode(as));
-	readl_poll_timeout(as->base + ADC_STATUS, st, !(st & STATUS_RUNNING), 100, 100000);
-
+	/* 1. Callbacks stop handing buffers to the DMA; readers see the end. */
 	spin_lock_irq(&as->lock);
-	as->running = false;		/* callbacks stop resubmitting */
+	as->running = false;
 	spin_unlock_irq(&as->lock);
-	wake_up_interruptible(&as->wq);	/* readers see the end of the stream */
+	wake_up(&as->wq);
 
-	/* Take the buffers back from the DMA (resets it), wait for callbacks. */
+	/*
+	 * 2. Fill the (at most two) buffers the DMA still holds with throw-away
+	 * samples at 100 MSa/s: 2 x 65536 samples take 1.3 ms. After a DMA
+	 * error the channel is already halted and this times out harmlessly.
+	 */
+	adc_wr(as, ADC_DIV, 1);
+	if (!wait_event_timeout(as->wq, READ_ONCE(as->inflight) == 0, HZ))
+		dev_warn(as->dev, "DMA still holds %u buffer(s) after 1 s\n",
+			 READ_ONCE(as->inflight));
+
+	/* 3. Generator off at once, FIFO emptied, normal rate back. */
+	adc_flush(as);
+	adc_wr(as, ADC_DIV, as->div);
+
+	/* 4. The channel is idle now, so it halts at once. */
 	dmaengine_terminate_sync(as->rx);
-	adc_flush(as);			/* a packet cut short leaves words in the FIFO */
 
 	/* Wait for a reader in the middle of a copy, then reset the ring. */
 	mutex_lock(&as->read_lock);
