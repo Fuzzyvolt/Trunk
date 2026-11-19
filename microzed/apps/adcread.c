@@ -13,15 +13,17 @@
  *   adcread -t 10 -q         only the summary line (used by adcstream-bench)
  *   adcread -m               zero copy: mmap() the DMA buffers, take/return
  *                            blocks with ioctl (see modules/adcstream/adcstream.h)
- *   adcread -s               skim: check only the first and last sample of each
- *                            block (sequence numbers only, no min/max/mean, no CSV).
+ *   adcread -s               skim: sequence check only, no min/max/mean, no CSV.
  *                            Shows what the transport alone can do.
  *
  * The four combinations measure where the time goes:
- *   (none)  read() copy + every sample checked
+ *   (none)  read() copy + min/max/mean of every sample
  *   -s      read() copy only
- *   -m      every sample read straight from the (uncached) DMA buffer
- *   -m -s   neither: only the hand-over of blocks
+ *   -m      every sample read straight from the (uncached) DMA buffer: slow,
+ *           each load goes to DDR (6.5 MSa/s max on the board)
+ *   -m -s   neither: only the hand-over of blocks (reaches the DMA's 98 MSa/s)
+ * read() is the fast way to look at every sample: the kernel copies the
+ * uncached buffer in bursts, the loop then runs on cached memory.
  *
  * The sequence number has 16 bits, so a loss of exactly 65536 samples (one
  * whole block of 65536) would not show; the driver's overrun counter, printed
@@ -191,14 +193,14 @@ int main(int argc, char **argv)
 	/* Per-interval statistics */
 	long long n_i = 0, lost_i = 0;
 	int vmin = 32767, vmax = -32768;
-	double sum = 0;
+	int64_t sum = 0;
 	int have_seq = 0;
 	uint16_t next_seq = 0;
 
 	if (!quiet)
 		printf("%lld samples per block, rate %lld Sa/s, %s, %s. Ctrl-C to stop.\n", bs, rate,
 		       use_mmap ? "mmap (zero copy)" : "read() (copy)",
-		       skim ? "skim (block ends only)" : "every sample checked");
+		       skim ? "skim (no min/max/mean)" : "min/max/mean of every sample");
 
 	t0 = t_last = now();
 	while (!stop) {
@@ -229,38 +231,52 @@ int main(int argc, char **argv)
 		}
 		blocks++;
 
-		if (skim) {
-			/* Inside a block the numbers must run first .. first+bs-1. */
-			uint16_t first = blk[0] >> 16, last = blk[bs - 1] >> 16;
+		/*
+		 * Lost samples, from the sequence numbers at the two ends of the
+		 * block. Numbers only ever move forward (+1 per sample, a jump for
+		 * every lost one), so inside a block last - first - (bs - 1) is
+		 * exactly the number lost, and first - next_seq the number lost
+		 * between blocks. Same answer as checking every sample, without a
+		 * compare and branch per sample. (Blind only to a loss of exactly
+		 * 65536: the numbers have 16 bits.)
+		 */
+		uint16_t first = blk[0] >> 16, last = blk[bs - 1] >> 16;
 
-			if (have_seq && first != next_seq)
-				lost_i += (uint16_t)(first - next_seq);
-			lost_i += (uint16_t)(last - (uint16_t)(first + bs - 1));
-			have_seq = 1;
-			next_seq = last + 1;
+		if (have_seq && first != next_seq)
+			lost_i += (uint16_t)(first - next_seq);
+		lost_i += (uint16_t)(last - (uint16_t)(first + bs - 1));
+		have_seq = 1;
+		next_seq = last + 1;
+
+		/*
+		 * Min, max, sum of every value. Kept tight: integers only (no
+		 * double per sample), min/max as conditional moves (no branch).
+		 * An int32 block sum cannot overflow: at most 65536 x 32768 = 2^31.
+		 */
+		if (!skim) {
+			int bmin = 32767, bmax = -32768;
+			int32_t bsum = 0;
+
+			for (long long i = 0; i < bs; i++) {
+				int v = (int16_t)blk[i];
+
+				bmin = v < bmin ? v : bmin;
+				bmax = v > bmax ? v : bmax;
+				bsum += v;
+			}
+			vmin = bmin < vmin ? bmin : vmin;
+			vmax = bmax > vmax ? bmax : vmax;
+			sum += bsum;
 		}
-		for (long long i = 0; !skim && i < bs; i++) {
-			uint16_t seq = blk[i] >> 16;
-			int16_t v = (int16_t)(blk[i] & 0xffff);
 
-			/* A jump in the sequence = samples lost (PL drop or overrun). */
-			if (have_seq && seq != next_seq)
-				lost_i += (uint16_t)(seq - next_seq);
-			have_seq = 1;
-			next_seq = seq + 1;
-
-			if (v < vmin) vmin = v;
-			if (v > vmax) vmax = v;
-			sum += v;
-
-			if (csv && csv_left > 0) {
-				fprintf(csv, "%u,%d\n", seq, v);
-				if (--csv_left == 0) {
-					fclose(csv);
-					csv = NULL;
-					if (!quiet)
-						printf("CSV written: %s\n", csv_name);
-				}
+		/* CSV: its own loop, so the fast loop above has no extra test. */
+		for (long long i = 0; csv && i < bs; i++) {
+			fprintf(csv, "%u,%d\n", blk[i] >> 16, (int16_t)blk[i]);
+			if (--csv_left == 0) {
+				fclose(csv);
+				csv = NULL;
+				if (!quiet)
+					printf("CSV written: %s\n", csv_name);
 			}
 		}
 		n_i += bs;
@@ -279,7 +295,7 @@ int main(int argc, char **argv)
 				       sysfs_num("overruns") - ovr0, sysfs_num("pl_dropped") - drop0);
 			else if (!quiet)
 				printf("t=%6.1f s  %9.0f Sa/s  min %6d  max %6d  mean %8.1f  lost %lld  overruns %lld  pl_dropped %lld\n",
-				       t - t0, n_i / (t - t_last), vmin, vmax, sum / n_i, lost_i,
+				       t - t0, n_i / (t - t_last), vmin, vmax, (double)sum / n_i, lost_i,
 				       sysfs_num("overruns") - ovr0, sysfs_num("pl_dropped") - drop0);
 			total += n_i;
 			lost += lost_i;
