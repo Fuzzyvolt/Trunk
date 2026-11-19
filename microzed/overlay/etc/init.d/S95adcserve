@@ -1,0 +1,32 @@
+#!/bin/sh
+# Start/stop the network sample servers (project 08): adcserve on TCP port
+# 5000 and adcserve -u on UDP port 5000, in the background. Each opens
+# /dev/adcstream only while a laptop is receiving. Logs: /var/log/adcserve-tcp.log,
+# /var/log/adcserve-udp.log (one line per session, -q).
+# Options for both from /etc/default/adcserve (ADCSERVE_OPTS, e.g. "-m").
+# No authentication: keep port 5000 inside the home network.
+
+[ -f /etc/default/adcserve ] && . /etc/default/adcserve
+
+start() {
+  [ "$ADCSERVE" = "no" ] && { echo "adcserve disabled in /etc/default/adcserve"; return 0; }
+  echo "Starting adcserve (TCP and UDP port 5000)"
+  start-stop-daemon -S -b -m -p /var/run/adcserve-tcp.pid -x /bin/sh -- \
+    -c "exec /usr/bin/adcserve -q $ADCSERVE_OPTS >> /var/log/adcserve-tcp.log 2>&1"
+  start-stop-daemon -S -b -m -p /var/run/adcserve-udp.pid -x /bin/sh -- \
+    -c "exec /usr/bin/adcserve -u -q $ADCSERVE_OPTS >> /var/log/adcserve-udp.log 2>&1"
+}
+
+stop() {
+  for p in tcp udp; do
+    start-stop-daemon -K -q -p /var/run/adcserve-$p.pid
+    rm -f /var/run/adcserve-$p.pid
+  done
+}
+
+case "$1" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; sleep 1; start ;;
+  *) echo "usage: $0 start|stop|restart"; exit 1 ;;
+esac

@@ -16,7 +16,7 @@ MICROZED_APPS_SITE_METHOD = local
 # (installs adcstream.h in staging).
 MICROZED_APPS_DEPENDENCIES = libgpiod microzed-modules
 
-MICROZED_APPS_PROGRAMS = hello blink adcread
+MICROZED_APPS_PROGRAMS = hello blink adcread adcserve
 
 # TARGET_CC is the cross-compiler; it finds headers and libraries in the
 # staging tree by itself. -O2 last, as in the old hand-made builds (adcread's
@@ -31,6 +31,9 @@ define MICROZED_APPS_BUILD_CMDS
 	$(TARGET_CC) $(MICROZED_APPS_CFLAGS) \
 		-I$(STAGING_DIR)/usr/include/microzed $(TARGET_LDFLAGS) \
 		-o $(@D)/adcread $(@D)/adcread.c
+	$(TARGET_CC) $(MICROZED_APPS_CFLAGS) \
+		-I$(STAGING_DIR)/usr/include/microzed $(TARGET_LDFLAGS) \
+		-o $(@D)/adcserve $(@D)/adcserve.c
 endef
 
 define MICROZED_APPS_INSTALL_TARGET_CMDS

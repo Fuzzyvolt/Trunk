@@ -30,7 +30,7 @@ FPGA_BIN ?= $(firstword $(wildcard $(HOME)/vivado/mz05_adc/mz05_adc.bin \
                         $(HOME)/vivado/mz03_pltimer/mz03_pltimer.bin)
 
 PKGS    := microzed-modules microzed-apps
-APPS    := hello blink adcread
+APPS    := hello blink adcread adcserve
 
 # Kernel version, like 6.12.0-xilinx: modules live in /lib/modules/$(KVER)/
 KVER     = $(shell cat $(firstword $(wildcard $(BR)/build/linux-*/include/config/kernel.release)) 2>/dev/null)
@@ -45,7 +45,7 @@ OLD_MODDIRS := myled axiregs pltimer dmaloop adcstream
 OLD_FILES   := etc/init.d/S99leddaemon etc/init.d/S40axiregs \
                lib/firmware/axiregs.bin lib/firmware/mz03_pltimer.bin \
                usr/bin/leddaemon
-OLD_OVERLAY := $(OLD_FILES) usr/bin/hello usr/bin/blink usr/bin/adcread
+OLD_OVERLAY := $(OLD_FILES) $(addprefix usr/bin/,$(APPS))
 
 all: packages
 
@@ -71,7 +71,7 @@ overlay:
 push: packages
 	@test -n "$(KVER)" || { echo "Kernel version not found in $(BR)/build/linux-*"; exit 1; }
 	$(DEPMOD) -a -b $(BR)/target $(KVER)
-	-ssh root@$(BOARD) '/etc/init.d/S99leddaemon stop 2>/dev/null; /etc/init.d/S30myled stop 2>/dev/null; rmmod myled_irq myled_dt myled 2>/dev/null; true'
+	-ssh root@$(BOARD) '[ -x /etc/init.d/S95adcserve ] && /etc/init.d/S95adcserve stop; /etc/init.d/S99leddaemon stop 2>/dev/null; /etc/init.d/S30myled stop 2>/dev/null; rmmod myled_irq myled_dt myled 2>/dev/null; true'
 	-ssh root@$(BOARD) 'for s in S40axiregs S40pl; do [ -x /etc/init.d/$$s ] && /etc/init.d/$$s stop; done; rmmod adciio adcstream dmaloop xilinx_dma pltimer axiregs 2>/dev/null; true'
 	ssh root@$(BOARD) 'cd / && rm -f $(OLD_FILES) && cd /lib/modules && rm -rf $(OLD_MODDIRS) && mkdir -p $(MODDIR)/microzed /lib/firmware'
 	scp -O $(BR)/target$(MODDIR)/microzed/*.ko root@$(BOARD):$(MODDIR)/microzed/
@@ -84,7 +84,7 @@ push: packages
 	scp -O overlay/etc/init.d/* root@$(BOARD):/etc/init.d/
 	ssh root@$(BOARD) 'mkdir -p /etc/default'
 	scp -O overlay/etc/default/* root@$(BOARD):/etc/default/
-	ssh root@$(BOARD) 'rm -f /srv/www/index.html; /etc/init.d/S30myled start; /etc/init.d/S40pl start'
+	ssh root@$(BOARD) 'rm -f /srv/www/index.html; /etc/init.d/S30myled start; /etc/init.d/S40pl start; /etc/init.d/S95adcserve start'
 
 image: overlay packages
 	$(MAKE) -C $(BR)

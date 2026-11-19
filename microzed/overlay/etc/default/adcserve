@@ -1,0 +1,5 @@
+# Read by /etc/init.d/S95adcserve (project 08).
+# ADCSERVE=no: do not start the network sample servers at boot.
+ADCSERVE=yes
+# Extra options for both servers, e.g. "-m" (zero copy) or "-S 1048576" (send buffer).
+ADCSERVE_OPTS=""
