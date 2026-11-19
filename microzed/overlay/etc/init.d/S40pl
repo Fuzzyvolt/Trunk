@@ -26,12 +26,24 @@
 #
 # Our modules come from the Buildroot package microzed-modules
 # (/lib/modules/<kernel version>/microzed/), so modprobe loads them by name.
+#
+# Project 07: the project 05 design has two drivers, pick one (they share
+# the registers and the DMA channel, so never both):
+#   ADC_DRIVER=adcstream   /dev/adcstream, web chart (default)
+#   ADC_DRIVER=adciio      IIO device "adcsim" (iio_info, iio_readdev)
+# Set it in /etc/default/pl, or for one run:
+#   /etc/init.d/S40pl stop; ADC_DRIVER=adciio /etc/init.d/S40pl start
 
 FW=pl.bin
 MGR=/sys/class/fpga_manager/fpga0
 MODS="axiregs pltimer"            # in every design, loaded in this order
-ALL="adcstream dmaloop xilinx_dma pltimer axiregs"   # unload order (reverse of load)
+ALL="adciio adcstream dmaloop xilinx_dma pltimer axiregs"   # unload order (reverse of load)
 AXIREGS=/sys/bus/platform/devices/43c00000.axiregs
+
+# A variable set on the command line wins over the file.
+_adc=$ADC_DRIVER
+[ -r /etc/default/pl ] && . /etc/default/pl
+ADC_DRIVER=${_adc:-${ADC_DRIVER:-adcstream}}
 
 loaded() { grep -q "^$1 " /proc/modules; }
 
@@ -80,10 +92,16 @@ case "$1" in
           || echo "dmaloop: loaded but not bound (DMA node disabled? see dmesg)"
         ;;
       0x4d5a05*)
+        case "$ADC_DRIVER" in
+          adcstream|adciio) ;;
+          *) echo "ADC_DRIVER=$ADC_DRIVER unknown (adcstream or adciio), using adcstream"
+             ADC_DRIVER=adcstream ;;
+        esac
         load xilinx_dma modprobe xilinx_dma || exit 1
-        load adcstream modprobe adcstream || exit 1
-        [ -e /sys/bus/platform/drivers/adcstream/43c20000.adcstream ] \
-          || echo "adcstream: loaded but not bound (node missing or disabled? see dmesg)"
+        # adciio: modprobe also loads the kernel's IIO DMA buffer modules it needs
+        load $ADC_DRIVER modprobe $ADC_DRIVER || exit 1
+        [ -e /sys/bus/platform/drivers/$ADC_DRIVER/43c20000.adcstream ] \
+          || echo "$ADC_DRIVER: loaded but not bound (node missing or disabled? see dmesg)"
         ;;
       *) echo "PL design ${id:-unknown} has no DMA: xilinx_dma, dmaloop not loaded" ;;
     esac
@@ -95,7 +113,7 @@ case "$1" in
       if rmmod $m; then
         echo "OK"
       else
-        echo "FAIL (in use? close /dev/pltimer, /dev/adcstream readers)"
+        echo "FAIL (in use? close /dev/pltimer, /dev/adcstream, /dev/iio:device readers)"
       fi
     done
     ;;

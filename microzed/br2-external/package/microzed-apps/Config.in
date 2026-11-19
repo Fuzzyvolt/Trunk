@@ -9,7 +9,8 @@ config BR2_PACKAGE_MICROZED_APPS
 
 	    hello    cross-compile test
 	    blink    blinks LED D3 until PB1 is pressed (libgpiod v1)
-	    adcread  reads /dev/adcstream and checks every sample
+	    adcread  reads /dev/adcstream (or the IIO device, -i, or a
+	             file, -f) and checks every sample
 
 comment "microzed-apps needs a Linux kernel and headers >= 4.8"
 	depends on !BR2_LINUX_KERNEL || !BR2_TOOLCHAIN_HEADERS_AT_LEAST_4_8

@@ -72,7 +72,7 @@ push: packages
 	@test -n "$(KVER)" || { echo "Kernel version not found in $(BR)/build/linux-*"; exit 1; }
 	$(DEPMOD) -a -b $(BR)/target $(KVER)
 	-ssh root@$(BOARD) '/etc/init.d/S99leddaemon stop 2>/dev/null; /etc/init.d/S30myled stop 2>/dev/null; rmmod myled_irq myled_dt myled 2>/dev/null; true'
-	-ssh root@$(BOARD) 'for s in S40axiregs S40pl; do [ -x /etc/init.d/$$s ] && /etc/init.d/$$s stop; done; rmmod adcstream dmaloop xilinx_dma pltimer axiregs 2>/dev/null; true'
+	-ssh root@$(BOARD) 'for s in S40axiregs S40pl; do [ -x /etc/init.d/$$s ] && /etc/init.d/$$s stop; done; rmmod adciio adcstream dmaloop xilinx_dma pltimer axiregs 2>/dev/null; true'
 	ssh root@$(BOARD) 'cd / && rm -f $(OLD_FILES) && cd /lib/modules && rm -rf $(OLD_MODDIRS) && mkdir -p $(MODDIR)/microzed /lib/firmware'
 	scp -O $(BR)/target$(MODDIR)/microzed/*.ko root@$(BOARD):$(MODDIR)/microzed/
 	scp -O $(BR)/target$(MODDIR)/modules.* root@$(BOARD):$(MODDIR)/
@@ -82,6 +82,8 @@ push: packages
 	scp -O overlay/srv/www/cgi-bin/* root@$(BOARD):/srv/www/cgi-bin/
 	scp -O overlay/srv/www/scope.html root@$(BOARD):/srv/www/
 	scp -O overlay/etc/init.d/* root@$(BOARD):/etc/init.d/
+	ssh root@$(BOARD) 'mkdir -p /etc/default'
+	scp -O overlay/etc/default/* root@$(BOARD):/etc/default/
 	ssh root@$(BOARD) 'rm -f /srv/www/index.html; /etc/init.d/S30myled start; /etc/init.d/S40pl start'
 
 image: overlay packages

@@ -17,10 +17,14 @@ Source for the programs and the Buildroot rootfs overlay used in `buildroot-micr
 | `modules/pltimer/` | Project 03: PL timer driver, `/dev/pltimer` blocks until the next tick; sysfs `period_us`, `enable`, `ticks`, `pl_ticks`, `missed`, `stats` |
 | `modules/dmaloop/` | Project 04: DMA engine client, loops a buffer through the PL (sysfs `size`, `run`, `result`) |
 | `modules/adcstream/` | Project 05: simulated-ADC stream driver: DMA buffer ring, `/dev/adcstream` (blocks of samples), sysfs `enable`, `rate`, `freq`, `mode`, `block_samples`, `overruns`, `pl_dropped`, `status`, `snapshot` |
-| `apps/adcread.c` | Project 05: reads `/dev/adcstream`, checks for lost samples, prints rate/min/max/mean per second, optional CSV; `-m` zero copy, `-s` skim |
+| `apps/adcread.c` | Project 05: reads `/dev/adcstream`, checks for lost samples, prints rate/min/max/mean per second, optional CSV; `-m` zero copy, `-s` skim. Project 07: `-i` reads the IIO device instead, `-f file` (or `-f -`) a recording |
+| `modules/adciio/` | Project 07: the same simulated ADC as a standard IIO device `adcsim` (IIO DMA engine buffer, `sampling_frequency`, `in_voltage0_*`), for `iio_info`, `iio_readdev` |
+| `overlay/usr/bin/adciio-bench` | Project 07: `adcstream-bench` through the IIO driver |
+| `overlay/etc/default/pl` | Project 07: `ADC_DRIVER=adcstream` or `adciio`, read by `S40pl` |
+| `tools/iio_check.py` | Project 07: runs on the laptop; checks an `iio_readdev` recording (lost samples, min/max, frequency, sine fit, `--plot`) |
 | `overlay/usr/bin/adcstream-bench` | Project 05: runs `adcread` at rising sample rates to find the highest one with no loss |
 | `overlay/srv/www/scope.html`, `overlay/srv/www/cgi-bin/adc` | Project 05: live chart of the stream, with rate/frequency/mode settings |
-| `configs/linux.fragment` | Kernel options on top of `xilinx_zynq_defconfig` (`CONFIG_XILINX_DMA=m`) |
+| `configs/linux.fragment` | Kernel options on top of `xilinx_zynq_defconfig` (`CONFIG_XILINX_DMA=m`; project 07: `CONFIG_IIO_BUFFER_DMA=m`, `CONFIG_IIO_BUFFER_DMAENGINE=m`) |
 | `overlay/usr/bin/dmaloop-bench` | Runs the DMA loopback for sizes 1 KB to 4 MB and prints a throughput table |
 | `modules/myled/` | Character driver: `/dev/myled` controls LED D3 (`echo 1`, `echo 0`, `echo t`, `cat`) |
 | `overlay/` | Files copied into the board's root filesystem (mirrors `/`) |
@@ -254,3 +258,22 @@ adcstream-bench 10 32768 -m -s   # zero copy, no per-sample work
 ```
 
 Live chart: `http://10.0.0.134/scope.html` (also linked from the status page).
+
+## The ADC as an IIO device (project 07)
+
+- `modules/adciio/adciio.c`: driver for the same hardware as adcstream (same bitstream, same device tree node), but as a standard IIO device named `adcsim`. The buffer is the kernel's IIO DMA engine buffer. Needs the two kernel options in `configs/linux.fragment` and libiio in Buildroot (see `buildroot-microzed-project.md`).
+- Only one of adcstream / adciio can be loaded. `S40pl` picks it from `ADC_DRIVER` in `/etc/default/pl` (default `adcstream`, so the web chart keeps working).
+
+On the board:
+
+```bash
+/etc/init.d/S40pl stop; ADC_DRIVER=adciio /etc/init.d/S40pl start
+iio_info                                   # lists xadc and adcsim
+iio_attr -c adcsim voltage0                # channel attributes
+iio_readdev -b 8192 -s 1000000 adcsim > /tmp/adc.bin   # 1 s at 1 MSa/s
+adcread -f /tmp/adc.bin                    # sequence check of the recording
+adcread -i -t 10                           # read the IIO device directly
+adciio-bench 10 16384                      # highest rate with no loss
+```
+
+The stream runs only while the IIO buffer is enabled (`iio_readdev`, `adcread -i`), not from load as with adcstream.

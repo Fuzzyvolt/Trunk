@@ -27,7 +27,7 @@ MICROZED_MODULES_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS = \
 
 # Folders in microzed/modules/ to build (hello, myled, myled-dt are the
 # early learning steps, not shipped).
-MICROZED_MODULES_MODULE_SUBDIRS = myled-irq axiregs pltimer dmaloop adcstream
+MICROZED_MODULES_MODULE_SUBDIRS = myled-irq axiregs pltimer dmaloop adcstream adciio
 
 # Install in /lib/modules/<version>/microzed/ (the kernel's default for
 # out-of-tree modules is updates/; our own folder name is easier to find).

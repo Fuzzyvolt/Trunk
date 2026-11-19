@@ -1,0 +1,57 @@
+#!/bin/sh
+# adciio-bench [seconds] [block_samples] [adcread options]
+#
+# Project 07: the same test as adcstream-bench, through the IIO driver
+# (adciio). For each rate it runs "adcread -i" (which enables the IIO buffer,
+# reads /dev/iio:deviceN and checks every sequence number) and prints one
+# line: samples lost, PL drops, CPU load. The highest rate with 0 lost is
+# the limit.
+#
+#   adciio-bench              10 s per rate, 8192-sample blocks
+#   adciio-bench 10 16384     16384-sample blocks (64 KiB, the largest the
+#                             DMA takes in one go)
+#   adciio-bench 10 16384 -s  skim: sequence check only, no min/max/mean
+#
+# With the IIO buffer there are only two DMA blocks, so a late reader makes
+# the PL drop samples (pl_dropped); there is no "overruns" count.
+
+SECS=${1:-10}
+BS=${2:-8192}
+OPTS=
+if [ $# -gt 2 ]; then shift 2; OPTS="$*"; fi
+RATES="100000 1000000 2000000 5000000 10000000 15000000 20000000 25000000 33333333 50000000 99999999"
+
+D=
+for n in /sys/bus/iio/devices/iio:device*; do
+  [ "$(cat $n/name 2>/dev/null)" = adcsim ] && D=$n
+done
+[ -n "$D" ] || { echo "no IIO device adcsim: load adciio (ADC_DRIVER=adciio /etc/init.d/S40pl start)"; exit 1; }
+OLD=$(cat $D/sampling_frequency)
+
+cpu_snap() { awk '/^cpu /{print $2+$3+$4+$5+$6+$7+$8, $5+$6}' /proc/stat; }
+
+echo "$D, block_samples $BS, $SECS s per rate, adcread options: ${OPTS:-none}"
+printf "%10s %11s %7s %9s %10s %5s\n" rate Sa/s MB/s lost pl_dropped cpu%
+for r in $RATES; do
+  if ! echo $r > $D/sampling_frequency 2>/dev/null; then
+    echo "$r: rate rejected by the driver, skipped"
+    continue
+  fi
+  set -- $(cpu_snap); t0=$1; i0=$2
+  line=$(adcread -i -b "$BS" -q -t "$SECS" $OPTS)
+  set -- $(cpu_snap); t1=$1; i1=$2
+  set -f
+  for kv in $line; do
+    case $kv in
+      rate=*) rate=${kv#*=} ;;
+      lost=*) lost=${kv#*=} ;;
+      pl_dropped=*) drop=${kv#*=} ;;
+      Sa/s=*) sas=${kv#*=} ;;
+      MB/s=*) mbs=${kv#*=} ;;
+    esac
+  done
+  set +f
+  cpu=$(( (t1 - t0 - (i1 - i0)) * 100 / (t1 - t0 + 1) ))
+  printf "%10s %11s %7s %9s %10s %5s\n" "$rate" "$sas" "$mbs" "$lost" "$drop" "$cpu"
+done
+echo "$OLD" > $D/sampling_frequency

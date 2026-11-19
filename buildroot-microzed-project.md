@@ -1,6 +1,6 @@
 # Buildroot + QEMU + MicroZed: project summary
 
-Last updated: 2026-11-19 (project 06 done: modules and programs as Buildroot packages, modprobe)
+Last updated: 2026-11-19 (project 07 in progress: IIO driver written, not yet tested on the board)
 
 Load this file at the start of a new session to continue the project.
 
@@ -382,6 +382,36 @@ microzed/br2-external/            BR2_EXTERNAL tree, name MICROZED
 - Not done (optional): automatic module loading from the device tree (`MODULE_DEVICE_TABLE` aliases + mdev/eudev). Fine for `myled_irq`; the PL drivers must still wait for the bitstream.
 - The per-module Makefiles in `modules/*/` still work for quick experiments (`insmod /root/x.ko`); `make clean` in `microzed/` removes their leftovers.
 
+### The ADC as an IIO device (project 07, in progress)
+
+```
+adcsim (PL) --> FIFO --> AXI DMA S2MM --> IIO DMA engine buffer --> /dev/iio:deviceN --> iio_readdev, adcread -i
+0x43C20000                (xilinx_dma)     (kernel helper, 2 blocks)   + /sys/bus/iio/devices/iio:deviceN/
+```
+
+Status 2026-11-19: written and compiled in the cloud session against linux-xlnx `xlnx_rebase_v6.12_LTS` (6.12.70) with `xilinx_zynq_defconfig` + `configs/linux.fragment`, ARM cross-compiler, `W=1`, no warnings. **Not yet run on the board.**
+
+What IIO is: the kernel's framework for ADCs, DACs and sensors. The driver describes its channels (type, sign, bits, scale); the IIO core makes the sysfs files, the `/dev/iio:deviceN` node and the buffer. Generic tools (libiio: `iio_info`, `iio_attr`, `iio_readdev`) then work with any IIO ADC. The XADC is already one (`iio:device0`, name `xadc`).
+
+Files (all in `microzed/`):
+- `modules/adciio/adciio.c`: platform driver, same compatible `microzed,adcstream` as adcstream (a compatible names the hardware, not the driver; whichever module is loaded binds). IIO device name `adcsim`, one channel `in_voltage0`: `le:s16/32>>0` (16-bit signed value in a 32-bit word; the top 16 bits still carry the sequence number). Attributes: `sampling_frequency` (+ `_available`, writable while streaming), `in_voltage0_scale` (1000/2^15 mV per LSB, a simulated ±1 V range), our own `in_voltage0_signal_frequency`, `in_voltage0_signal_mode` (`sine`/`saw`, an `IIO_ENUM`), `pl_samples`, `pl_dropped`, `pl_packets`, `block_samples`.
+- `configs/linux.fragment`: `CONFIG_IIO_BUFFER_DMA=m`, `CONFIG_IIO_BUFFER_DMAENGINE=m` (checked: `olddefconfig` keeps both as `=m`; `CONFIG_IIO=y` and `CONFIG_IIO_BUFFER=y` already come from the XADC driver).
+- `overlay/etc/init.d/S40pl` + `overlay/etc/default/pl`: `ADC_DRIVER=adcstream` (default, web chart) or `adciio`. One-off: `/etc/init.d/S40pl stop; ADC_DRIVER=adciio /etc/init.d/S40pl start`.
+- `apps/adcread.c`: `-i` reads the IIO device itself (sets `scan_elements/in_voltage0_en`, `buffer/length` = 2 x block, `buffer/enable`), `-b` block size; `-f file` / `-f -` checks a recording or a pipe from `iio_readdev`.
+- `overlay/usr/bin/adciio-bench`: like `adcstream-bench`, through `adcread -i`.
+- `tools/iio_check.py` (laptop, numpy): lost samples, min/max, FFT frequency, sine fit, `--plot`.
+- Status web page shows the IIO device when adciio is loaded. `/scope.html` needs adcstream.
+
+How the buffer fits the hardware (read from the 6.12 source, `drivers/iio/buffer/industrialio-buffer-dma*.c`):
+- `iio_dmaengine_buffer_setup(dev, indio_dev, "rx")` requests the S2MM channel (from `dma-names`) and does all the DMA work: `dmaengine_prep_slave_single()` + submit + `issue_pending` per block, completion callback, hands done blocks to `read()`.
+- With `read()` (all libiio 0.x does) it uses exactly **two blocks** of `buffer/length / 2` samples, capped at 64 KiB (the DMA device's default max segment size): one filling, one being read. That matches xilinx_dma's simple-mode limit (one queued behind the running one).
+- Slack is one block. A late reader leaves the DMA with no block, the PL FIFO overflows: loss shows as `pl_dropped`, not as overruns.
+- Simple mode reports no residue, so the PL packet (TLAST every `PKT_LEN`) must be exactly one block. `postenable` reads the size the DMA was actually given (`blocks[0]->bytes_used`, from the queue struct in `buffer-dma.h`) and writes it to `PKT_LEN` before starting the PL. `preenable` refuses an odd `buffer/length` (half-sample blocks).
+- Stop: the core calls `predisable`, then `dmaengine_terminate_sync()`, then `postdisable`. The project 05 hang (an S2MM channel waiting for data never halts) is avoided by `predisable` setting DIV = 1: the PL makes 100 MSa/s until `postdisable`, so every block the DMA holds fills in < 0.4 ms. Side effect: the last block(s) of a recording hold 100 MSa/s samples. A failure must never happen after the blocks are queued (`postenable` cannot fail): the core would then stop a DMA that waits for data.
+- libiio 0.26 (Buildroot 2026.02) writes `buffer/length` = 4 x the `-b` size, so `iio_readdev -b 8192` gives 64 KiB blocks. It prints "High-speed mode not enabled": expected (that is ADI's out-of-tree mmap interface). `buffer/watermark` is read-only here; libiio accepts that.
+
+Buildroot setup for this project (laptop, once): `make menuconfig` in `~/br-microzed` -> Target packages -> Libraries -> Hardware handling -> `libiio`, with "Install test programs" on (`iio_info`, `iio_attr`, `iio_readdev`, ...); the USB and serial backends can be turned off. "IIO Daemon" (iiod) is optional: it would let the laptop use libiio over the network (`iio_info -u ip:10.0.0.134`). Then `make linux-reconfigure` (kernel fragment) and `make flash` in `microzed/`.
+
 ### Repo workflow (`~/microzed-linux/microzed`)
 
 All source files now live in the git repo, in `microzed/` (see `microzed/README.md`). Claude writes files there; the laptop gets them with git.
@@ -559,7 +589,7 @@ The next projects are written as self-contained briefs in `microzed/projects/` (
 4. ~~`04-axi-dma-loopback.md`: AXI DMA loopback with the DMA engine framework.~~ Done 2026-11-18 (393 MB/s at 1 MiB).
 5. ~~`05-dma-data-stream.md`: simulated ADC stream to a live web chart.~~ Done 2026-11-19 (zero loss at 1 MSa/s for 5 min, up to 14 MSa/s).
 6. `06-buildroot-package.md`: build our modules and programs as Buildroot packages, `modprobe`. Done 2026-11-19.
-7. `07-iio-adc-driver.md`: the ADC stream as a standard IIO device (libiio tools, `iio_readdev`).
+7. `07-iio-adc-driver.md`: the ADC stream as a standard IIO device (libiio tools, `iio_readdev`). Driver written 2026-11-19, board test next (see "The ADC as an IIO device").
 8. `08-network-stream.md`: every sample to the laptop over TCP, then UDP; Python receiver that checks, records, plots and runs an FFT. The web page stays as the status view; this is the real data channel.
 
 Next session: `07-iio-adc-driver.md`, then 08. Later: a real sensor once a MicroHeader breakout is available (SPI ADC or pressure sensor sampled by the PL in place of adcsim, same driver); cached DMA buffers, scatter-gather, FIR filter in the PL, QSPI boot, read-only rootfs, watchdog, FreeRTOS/AMP (see "Longer roadmap").

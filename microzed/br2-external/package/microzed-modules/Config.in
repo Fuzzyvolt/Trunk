@@ -11,6 +11,9 @@ config BR2_PACKAGE_MICROZED_MODULES
 	    pltimer    PL timer interrupt, /dev/pltimer (project 03)
 	    dmaloop    AXI DMA loopback (project 04)
 	    adcstream  simulated ADC stream, /dev/adcstream (project 05)
+	    adciio     the same ADC as an IIO device (project 07); needs
+	               CONFIG_IIO_BUFFER_DMAENGINE in the kernel
+	               (configs/linux.fragment)
 
 	  Also installs adcstream.h (the ioctl/mmap interface) in the
 	  staging tree for programs that use /dev/adcstream.

@@ -1,5 +1,6 @@
 /*
- * adcread - read the project 05 sample stream from /dev/adcstream.
+ * adcread - read the project 05 sample stream from /dev/adcstream
+ * (or from the project 07 IIO device, or a file: see -i and -f below).
  *
  * Every second it prints the measured sample rate, min/max/mean of the
  * values, and how many samples were lost. Lost samples are found from the
@@ -15,6 +16,18 @@
  *                            blocks with ioctl (see modules/adcstream/adcstream.h)
  *   adcread -s               skim: sequence check only, no min/max/mean, no CSV.
  *                            Shows what the transport alone can do.
+ *
+ * The same checks on other sources (project 07):
+ *   adcread -i               the IIO driver (adciio): sets up and enables the
+ *                            buffer of the IIO device named "adcsim", reads
+ *                            /dev/iio:deviceN, disables the buffer at the end
+ *   adcread -i -b 16384      ... reading 16384 samples at a time (buffer/length
+ *                            = twice that, so each DMA block is one read)
+ *   adcread -f data.bin      raw 32-bit words from a file, e.g. recorded with
+ *                            iio_readdev; -f - reads standard input:
+ *                            iio_readdev -b 8192 adcsim | adcread -f -
+ * With the IIO driver a slow reader shows up as pl_dropped (the DMA has no
+ * free block, the PL FIFO overflows), not as overruns.
  *
  * The four combinations measure where the time goes:
  *   (none)  read() copy + min/max/mean of every sample
@@ -52,8 +65,14 @@
 #ifndef SYSFS
 #define SYSFS "/sys/bus/platform/devices/43c20000.adcstream/"
 #endif
+#define IIO_DEVICES "/sys/bus/iio/devices/"
+#define IIO_NAME    "adcsim"
 
 static volatile sig_atomic_t stop;
+
+/* Where the driver's sysfs files are; NULL = none (reading a file). */
+static const char *sysdir = SYSFS;
+static char iio_dir[64];
 
 static void on_signal(int sig)
 {
@@ -68,7 +87,9 @@ static long long sysfs_num(const char *name)
 	long long v = -1;
 	FILE *f;
 
-	snprintf(path, sizeof(path), SYSFS "%s", name);
+	if (!sysdir)
+		return -1;
+	snprintf(path, sizeof(path), "%s%s", sysdir, name);
 	f = fopen(path, "r");
 	if (!f)
 		return -1;
@@ -76,6 +97,55 @@ static long long sysfs_num(const char *name)
 		v = -1;
 	fclose(f);
 	return v;
+}
+
+/* Write a string to a file in sysdir. 0 on success, -1 on error (message printed). */
+static int sysfs_write(const char *name, const char *val)
+{
+	char path[128];
+	FILE *f;
+	int ok;
+
+	snprintf(path, sizeof(path), "%s%s", sysdir, name);
+	f = fopen(path, "w");
+	if (!f) {
+		perror(path);
+		return -1;
+	}
+	ok = fputs(val, f) >= 0;
+	ok = (fclose(f) == 0) && ok;	/* sysfs reports errors at write/close */
+	if (!ok) {
+		fprintf(stderr, "%s: cannot write %s: %s\n", path, val, strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * Find the IIO device named "adcsim": /sys/bus/iio/devices/iio:deviceN/name.
+ * Fills iio_dir and dev ("/dev/iio:deviceN"). The XADC is usually device 0,
+ * ours device 1, but the number depends on load order: look it up.
+ */
+static int find_iio(char *dev, size_t devlen)
+{
+	for (int n = 0; n < 16; n++) {
+		char path[96], name[32] = "";
+		FILE *f;
+
+		snprintf(path, sizeof(path), IIO_DEVICES "iio:device%d/name", n);
+		f = fopen(path, "r");
+		if (!f)
+			continue;
+		if (fscanf(f, "%31s", name) != 1)
+			name[0] = 0;
+		fclose(f);
+		if (strcmp(name, IIO_NAME) == 0) {
+			snprintf(iio_dir, sizeof(iio_dir), IIO_DEVICES "iio:device%d/", n);
+			snprintf(dev, devlen, "/dev/iio:device%d", n);
+			return 0;
+		}
+	}
+	return -1;
 }
 
 static double now(void)
@@ -108,11 +178,15 @@ int main(int argc, char **argv)
 	double seconds = 0, t0, t_last, t;
 	const char *csv_name = NULL;
 	long long csv_left = 100000;
-	int quiet = 0, use_mmap = 0, skim = 0, opt, fd;
+	int quiet = 0, use_mmap = 0, skim = 0, use_iio = 0, opt, fd;
+	const char *file_name = NULL;
+	long long bs = 0;
 	FILE *csv = NULL;
 	struct sigaction sa;
+	char dev[32] = DEV;
+	const char *rate_file = "rate";
 
-	while ((opt = getopt(argc, argv, "t:c:n:qms")) != -1) {
+	while ((opt = getopt(argc, argv, "t:c:n:qmsib:f:")) != -1) {
 		switch (opt) {
 		case 't': seconds = atof(optarg); break;
 		case 'c': csv_name = optarg; break;
@@ -120,16 +194,48 @@ int main(int argc, char **argv)
 		case 'q': quiet = 1; break;
 		case 'm': use_mmap = 1; break;
 		case 's': skim = 1; break;
+		case 'i': use_iio = 1; break;
+		case 'b': bs = atoll(optarg); break;
+		case 'f': file_name = optarg; break;
 		default:
-			fprintf(stderr, "usage: %s [-t seconds] [-c file.csv [-n samples]] [-q] [-m] [-s]\n", argv[0]);
+			fprintf(stderr, "usage: %s [-t seconds] [-c file.csv [-n samples]] [-q] [-s]\n"
+				"         [-m | -i [-b samples] | -f file|- [-b samples]]\n", argv[0]);
 			return 2;
 		}
 	}
+	if ((use_iio || file_name) && use_mmap) {
+		fprintf(stderr, "-m works with adcstream only\n");
+		return 2;
+	}
+	if (use_iio && file_name) {
+		fprintf(stderr, "-i or -f, not both\n");
+		return 2;
+	}
 
-	long long bs = sysfs_num("block_samples");
-	long long rate = sysfs_num("rate");
-	if (bs <= 0 || rate <= 0) {
+	if (use_iio) {
+		/* The IIO device: rate from its standard attribute, block size our choice. */
+		if (find_iio(dev, sizeof(dev)) < 0) {
+			fprintf(stderr, "no IIO device named " IIO_NAME ": is adciio loaded?\n");
+			return 2;
+		}
+		sysdir = iio_dir;
+		rate_file = "sampling_frequency";
+		if (bs <= 0)
+			bs = 8192;
+	} else if (file_name) {
+		sysdir = NULL;		/* no driver counters, no rate */
+		if (bs <= 0)
+			bs = 8192;
+	} else {
+		bs = sysfs_num("block_samples");
+	}
+	long long rate = sysfs_num(rate_file);
+	if (bs <= 0 || (!file_name && rate <= 0)) {
 		fprintf(stderr, "cannot read " SYSFS "block_samples / rate: is adcstream loaded?\n");
+		return 2;
+	}
+	if (use_iio && bs % 2) {
+		fprintf(stderr, "-b must be even\n");
 		return 2;
 	}
 	size_t block_bytes = bs * 4;
@@ -156,10 +262,34 @@ int main(int argc, char **argv)
 	sigaction(SIGINT, &sa, NULL);
 	sigaction(SIGTERM, &sa, NULL);
 
-	fd = open(DEV, O_RDONLY);
-	if (fd < 0) {
-		perror(DEV);
-		return 2;
+	if (file_name && strcmp(file_name, "-") == 0) {
+		fd = 0;			/* standard input */
+	} else {
+		const char *path = file_name ? file_name : dev;
+
+		fd = open(path, O_RDONLY);
+		if (fd < 0) {
+			perror(path);
+			return 2;
+		}
+	}
+
+	/*
+	 * IIO buffer setup, the same steps libiio does:
+	 *   buffer/enable 0                  (stop, in case it ran)
+	 *   scan_elements/in_voltage0_en 1   (which channels go into the buffer)
+	 *   buffer/length 2 x bs             (the kernel splits it into 2 DMA blocks)
+	 *   buffer/enable 1                  (preenable, DMA, postenable: PL starts)
+	 */
+	if (use_iio) {
+		char len[24];
+
+		snprintf(len, sizeof(len), "%lld", 2 * bs);
+		sysfs_write("buffer/enable", "0");
+		if (sysfs_write("scan_elements/in_voltage0_en", "1") ||
+		    sysfs_write("buffer/length", len) ||
+		    sysfs_write("buffer/enable", "1"))
+			return 2;
 	}
 
 	/* mmap mode: map every ring buffer once; ring[i] is DMA buffer i. */
@@ -199,6 +329,7 @@ int main(int argc, char **argv)
 
 	if (!quiet)
 		printf("%lld samples per block, rate %lld Sa/s, %s, %s. Ctrl-C to stop.\n", bs, rate,
+		       use_iio ? "IIO read()" : file_name ? "file" :
 		       use_mmap ? "mmap (zero copy)" : "read() (copy)",
 		       skim ? "skim (no min/max/mean)" : "min/max/mean of every sample");
 
@@ -224,7 +355,7 @@ int main(int argc, char **argv)
 				if (r < 0 && errno != EINTR)
 					perror("read");
 				if (r == 0)
-					fprintf(stderr, "end of stream (enable = 0?)\n");
+					fprintf(stderr, file_name ? "end of file\n" : "end of stream (enable = 0?)\n");
 				break;
 			}
 			blk = buf;
@@ -315,13 +446,19 @@ int main(int argc, char **argv)
 	if (use_mmap)
 		for (unsigned int i = 0; i < info.nbuf; i++)
 			munmap((void *)ring[i], info.buf_size);
-	close(fd);
+	/* Counters before stopping: the IIO stop floods the PL, which adds drops. */
+	long long ovr_end = sysfs_num("overruns") - ovr0;
+	long long drop_end = sysfs_num("pl_dropped") - drop0;
+	long long rate_end = sysfs_num(rate_file);
+	if (use_iio)
+		sysfs_write("buffer/enable", "0");	/* DMA stops, PL stops */
+	if (fd > 0)
+		close(fd);
 	if (csv)
 		fclose(csv);
 
 	printf("summary seconds=%.1f rate=%lld blocks=%lld samples=%lld lost=%lld overruns=%lld pl_dropped=%lld Sa/s=%.0f MB/s=%.1f\n",
-	       t, sysfs_num("rate"), blocks, total, lost, sysfs_num("overruns") - ovr0,
-	       sysfs_num("pl_dropped") - drop0, total / t, total * 4 / t / 1e6);
+	       t, rate_end, blocks, total, lost, ovr_end, drop_end, total / t, total * 4 / t / 1e6);
 	free(buf);
 	return lost ? 1 : 0;
 }

@@ -9,3 +9,10 @@
 # registers before the PL is programmed, and the CPU hangs. As a module,
 # /etc/init.d/S40pl loads it after the bitstream (modprobe xilinx_dma).
 CONFIG_XILINX_DMA=m
+#
+# Project 07: the IIO DMA buffer helpers (industrialio-buffer-dma.ko and
+# industrialio-buffer-dmaengine.ko), used by modules/adciio. Nothing in
+# xilinx_zynq_defconfig selects them. IIO and IIO_BUFFER are already on
+# (the XADC driver needs them). Modules: modprobe adciio loads them first.
+CONFIG_IIO_BUFFER_DMA=m
+CONFIG_IIO_BUFFER_DMAENGINE=m
