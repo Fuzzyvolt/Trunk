@@ -50,22 +50,29 @@
  *   echo 1 > buffer/enable:  preenable   check the block size, empty the PL FIFO
  *                            (core)      queue both blocks with the DMA
  *                            postenable  PKT_LEN = block size, start the PL
- *   echo 0 > buffer/enable:  predisable  PL at full speed for 2 ms (see below)
- *                            (core)      dmaengine_terminate_sync()
- *                            postdisable stop the PL, empty its FIFO
+ *   echo 0 > buffer/enable:  predisable  empty the DMA, then stop the PL (see below)
+ *                            (core)      dmaengine_terminate_sync(): halt + reset
  *
  * The PL's packet (TLAST every PKT_LEN samples) must be exactly one block:
  * in simple mode xilinx_dma reports no residue, so a short packet would end
  * a block early with stale data in the rest, and a long one would run over.
  *
- * Why predisable floods the DMA: the core stops the DMA with
- * dmaengine_terminate_sync(). An S2MM channel that holds a block and gets no
- * data never halts, and xilinx_dma's halt timeout never expires (project 05:
- * the board hung in "echo 0 > enable"). So before the core stops it, the PL
- * makes samples at 100 MSa/s (DIV = 1) and keeps doing so until postdisable:
- * the at most two blocks the DMA holds fill in well under 1 ms, and a block
- * the reader hands back in the meantime fills just as fast. The last block(s)
- * of a stream therefore hold samples taken at 100 MSa/s.
+ * Stopping (predisable), in this order:
+ *   1. no more blocks to the DMA (the core's queue->active = false)
+ *   2. PL at 100 MSa/s (DIV = 1) until the DMA holds no block (< 1 ms)
+ *   3. PL stopped, its FIFO emptied
+ * Then the core's dmaengine_terminate_sync() halts and resets an idle DMA.
+ * Why each step:
+ *   - An S2MM channel that holds a block and gets no data never halts, and
+ *     xilinx_dma's halt timeout never expires (project 05: the board hung).
+ *     Steps 1-2 make sure it holds none.
+ *   - Words that reach the DMA after its reset stay inside it and land in
+ *     front of the next stream's first packet, which then no longer fits its
+ *     block: DMA internal error ("has errors 10"), the channel stops, the
+ *     next reader waits forever. Found on the board: first version stopped
+ *     the PL only after the reset. Step 3 before the reset avoids it (any
+ *     words the idle DMA took in between are cleared by the reset).
+ * The last block(s) of a stream hold samples taken at 100 MSa/s.
  *
  * Load order: bitstream, xilinx_dma, this (S40pl does it, when
  * ADC_DRIVER=adciio). Never together with adcstream: both want the same
@@ -78,6 +85,7 @@
 #include <linux/device.h>
 #include <linux/fpga/fpga-mgr.h>
 #include <linux/io.h>
+#include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/math64.h>
 #include <linux/mod_devicetable.h>
@@ -124,7 +132,7 @@ struct adciio {
 	u32 div;			/* clocks per sample */
 	u32 freq_hz;			/* test signal frequency */
 	bool sine;
-	bool streaming;			/* between postenable and postdisable */
+	bool streaming;			/* between postenable and predisable */
 	u32 pkt_len;			/* samples per DMA block, last stream */
 };
 
@@ -391,6 +399,20 @@ static struct iio_dma_buffer_queue *adciio_queue(struct adciio *st)
 	return container_of(st->buffer, struct iio_dma_buffer_queue, buffer);
 }
 
+/* Number of read() blocks the DMA holds right now (0..2). */
+static int adciio_blocks_active(struct iio_dma_buffer_queue *q)
+{
+	int i, n = 0;
+
+	spin_lock_irq(&q->list_lock);
+	for (i = 0; i < ARRAY_SIZE(q->fileio.blocks); i++)
+		if (q->fileio.blocks[i] &&
+		    q->fileio.blocks[i]->state == IIO_BLOCK_STATE_ACTIVE)
+			n++;
+	spin_unlock_irq(&q->list_lock);
+	return n;
+}
+
 /*
  * Before the core queues the blocks with the DMA. A failure here is safe
  * (nothing is queued yet); a failure later would make the core stop a DMA
@@ -411,6 +433,16 @@ static int adciio_preenable(struct iio_dev *indio_dev)
 			q->fileio.block_size / 2);
 		return -EINVAL;
 	}
+
+	/*
+	 * The core never resets which block read() takes next. If the last
+	 * stream ended after an odd number of blocks, read() would start with
+	 * block 1 while the DMA fills block 0 first: the first two blocks come
+	 * out swapped. Both blocks are idle here (QUEUED, not yet submitted).
+	 */
+	mutex_lock(&q->lock);
+	q->fileio.next_dequeue = 0;
+	mutex_unlock(&q->lock);
 
 	mutex_lock(&st->lock);
 	adc_flush(st);			/* no old samples in the FIFO */
@@ -449,24 +481,34 @@ static int adciio_postenable(struct iio_dev *indio_dev)
 	return 0;
 }
 
-/* Before the core stops the DMA: make sure it gets data until it has. */
+/* Before the core stops the DMA: empty it, then stop the PL (see the top). */
 static int adciio_predisable(struct iio_dev *indio_dev)
 {
 	struct adciio *st = iio_priv(indio_dev);
+	struct iio_dma_buffer_queue *q = adciio_queue(st);
+	unsigned long timeout;
+	int n;
 
+	/*
+	 * 1. Blocks read() hands back now go to the core's "incoming" list
+	 * instead of the DMA. The core sets this itself right after us; we need
+	 * it earlier. q->lock is what read() holds while handing a block back.
+	 */
+	mutex_lock(&q->lock);
+	q->active = false;
+	mutex_unlock(&q->lock);
+
+	/* 2. Fill what the DMA holds: 2 x 16384 samples at 100 MSa/s = 0.33 ms. */
 	mutex_lock(&st->lock);
-	adc_wr(st, ADC_DIV, 1);		/* 100 MSa/s; st->div keeps the real rate */
+	adc_wr(st, ADC_DIV, 1);		/* st->div keeps the real rate */
 	mutex_unlock(&st->lock);
-	/* 2 blocks of at most 16384 samples at 100 MSa/s: 0.33 ms. */
-	usleep_range(2000, 3000);
-	return 0;
-}
+	timeout = jiffies + msecs_to_jiffies(100);
+	while ((n = adciio_blocks_active(q)) && time_before(jiffies, timeout))
+		usleep_range(100, 200);
+	if (n)		/* after a DMA error: the channel is halted, terminate won't hang */
+		dev_warn(st->dev, "DMA still holds %d block(s) after 100 ms\n", n);
 
-/* The DMA has stopped: stop the PL, empty the FIFO, normal rate back. */
-static int adciio_postdisable(struct iio_dev *indio_dev)
-{
-	struct adciio *st = iio_priv(indio_dev);
-
+	/* 3. PL off, FIFO empty, normal rate back. Nothing flows any more. */
 	mutex_lock(&st->lock);
 	st->streaming = false;
 	adc_flush(st);
@@ -479,7 +521,6 @@ static const struct iio_buffer_setup_ops adciio_buffer_ops = {
 	.preenable = adciio_preenable,
 	.postenable = adciio_postenable,
 	.predisable = adciio_predisable,
-	.postdisable = adciio_postdisable,
 };
 
 /* ------------------------------------------------------------------ */
