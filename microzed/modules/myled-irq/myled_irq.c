@@ -14,7 +14,7 @@
  *                Supports poll()/select() and O_NONBLOCK.
  * Each press also toggles the LED (done in the interrupt thread).
  *
- * Stop leddaemon and rmmod the other myled modules first (same GPIOs, same names).
+ * Loaded at boot by /etc/init.d/S30myled (modprobe myled_irq).
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 

@@ -5,7 +5,7 @@
 #define LED_LINE 47   /* MIO47 = LED D3 */
 #define BTN_LINE 51   /* MIO51 = button PB1 */
 
-/* Stop leddaemon first (/etc/init.d/S99leddaemon stop): only one program can own a line. */
+/* Only one program can own a line: rmmod myled_irq first (it owns the LED and button). */
 int main(void) {
     struct gpiod_chip *chip = gpiod_chip_open_by_name("gpiochip0");
     if (!chip) { perror("open chip"); return 1; }

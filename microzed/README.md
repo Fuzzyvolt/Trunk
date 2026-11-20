@@ -1,306 +1,149 @@
 # MicroZed files
 
-Source for the programs and the Buildroot rootfs overlay used in `buildroot-microzed-project.md`.
+Sources for the MicroZed board: kernel modules, programs, the rootfs overlay, the FPGA (PL) designs and the laptop tools. Background, results and lessons learned are in `../buildroot-microzed-project.md`.
 
-## Layout
+```
+microzed/
+  Makefile        make / make push / make overlay / make flash
+  flash-sd.sh     writes the Buildroot image to the SD card (safety checks)
+  apps/           programs for the board (Buildroot package microzed-apps)
+  modules/        kernel modules (Buildroot package microzed-modules)
+  br2-external/   the Buildroot external tree that defines those two packages
+  board/          post-image script: adds our device tree nodes to the .dtb
+  configs/        kernel and BusyBox config fragments
+  overlay/        files copied into the board's root filesystem (mirrors /)
+  fpga/           PL sources: Verilog, testbenches, Vivado Tcl (see fpga/README.md)
+  tools/          programs that run on the laptop
+  projects/       one brief per project (see projects/README.md)
+  docs/           Avnet MicroZed user guide (PDF)
+```
 
-| Path | What it is |
-|---|---|
-| `apps/hello.c` | Cross-compile test |
-| `apps/blink.c` | Blinks LED D3 until PB1 is pressed (libgpiod v1) |
-| `apps/leddaemon.c`, `apps/leddaemon.init` | Retired user-space daemon for LED D3 and PB1 (replaced by the myled_irq driver); kept for reference |
-| `modules/hello/` | First kernel module (own Makefile, builds against the Buildroot kernel) |
-| `modules/myled-dt/` | Same `/dev/myled`, as a platform driver bound to a device tree node (`compatible = "microzed,myled"`) |
-| `modules/myled-irq/` | Adds PB1 with an interrupt: `/dev/mybutton` blocks until a press; a press toggles the LED |
-| `board/post-image-dt.sh` | Buildroot post-image script: adds the `myled`, `axiregs@43c00000`, `pltimer@43c10000`, `dma@40400000`, `dmaloop` and `adcstream@43c20000` nodes to the `.dtb` before the SD image is made |
-| `modules/axiregs/` | Project 02: platform driver for the AXI register block in the PL, sysfs files `reg0`, `reg1`, `sum`, `count`, `id` |
-| `modules/pltimer/` | Project 03: PL timer driver, `/dev/pltimer` blocks until the next tick; sysfs `period_us`, `enable`, `ticks`, `pl_ticks`, `missed`, `stats` |
-| `modules/dmaloop/` | Project 04: DMA engine client, loops a buffer through the PL (sysfs `size`, `run`, `result`) |
-| `modules/adcstream/` | Project 05: simulated-ADC stream driver: DMA buffer ring, `/dev/adcstream` (blocks of samples), sysfs `enable`, `rate`, `freq`, `mode`, `block_samples`, `overruns`, `pl_dropped`, `status`, `snapshot` |
-| `apps/adcread.c` | Project 05: reads `/dev/adcstream`, checks for lost samples, prints rate/min/max/mean per second, optional CSV; `-m` zero copy, `-s` skim. Project 07: `-i` reads the IIO device instead, `-f file` (or `-f -`) a recording |
-| `modules/adciio/` | Project 07: the same simulated ADC as a standard IIO device `adcsim` (IIO DMA engine buffer, `sampling_frequency`, `in_voltage0_*`), for `iio_info`, `iio_readdev` |
-| `overlay/usr/bin/adciio-bench` | Project 07: `adcstream-bench` through the IIO driver |
-| `overlay/etc/default/pl` | Project 07: `ADC_DRIVER=adcstream` or `adciio`, read by `S40pl` |
-| `apps/adcserve.c` | Project 08: sends `/dev/adcstream` to the laptop over TCP (default) or UDP (`-u`), port 5000; `-m` zero copy |
-| `tools/adcrecv.py` | Project 08: runs on the laptop; receives from adcserve, checks sequence numbers, prints rate/losses, records (`-o`), live plot + FFT (`--plot`) |
-| `tools/adcnet-bench` | Project 08: runs on the laptop; highest lossless rate over the network, one line per rate (sets the rate over ssh) |
-| `overlay/etc/init.d/S95adcserve`, `overlay/etc/default/adcserve` | Project 08: start the TCP and UDP servers at boot (`ADCSERVE=no` to turn off) |
-| `tools/iio_check.py` | Project 07: runs on the laptop; checks an `iio_readdev` recording (lost samples, min/max, frequency, sine fit, `--plot`) |
-| `overlay/usr/bin/adcstream-bench` | Project 05: runs `adcread` at rising sample rates to find the highest one with no loss |
-| `overlay/srv/www/scope.html`, `overlay/srv/www/cgi-bin/adc` | Project 05: live chart of the stream, with rate/frequency/mode settings |
-| `configs/linux.fragment` | Kernel options on top of `xilinx_zynq_defconfig` (`CONFIG_XILINX_DMA=m`; project 07: `CONFIG_IIO_BUFFER_DMA=m`, `CONFIG_IIO_BUFFER_DMAENGINE=m`) |
-| `overlay/usr/bin/dmaloop-bench` | Runs the DMA loopback for sizes 1 KB to 4 MB and prints a throughput table |
-| `modules/myled/` | Character driver: `/dev/myled` controls LED D3 (`echo 1`, `echo 0`, `echo t`, `cat`) |
-| `overlay/` | Files copied into the board's root filesystem (mirrors `/`) |
-| `overlay/etc/init.d/S90httpd` | Starts BusyBox httpd at boot |
-| `overlay/etc/init.d/S30myled` | Loads the myled_irq driver at boot (`modprobe myled_irq`) |
-| `overlay/etc/init.d/S40pl` | Programs the PL with `/lib/firmware/pl.bin`, loads axiregs and pltimer, then xilinx_dma + dmaloop (project 04 design) or xilinx_dma + adcstream (project 05 design) |
-| `overlay/etc/network/interfaces` | eth0 DHCP with the fixed MAC `02:0a:35:00:00:01` |
-| `overlay/srv/www/cgi-bin/` | Web page: `status`, `control` (buttons), `index.cgi` (redirect for `/`), `adc` (data for `/scope.html`) |
-| `configs/busybox.fragment` | BusyBox options (httpd + CGI) |
-| `Makefile` | Rebuild the packages in Buildroot, copy to the overlay, or push to the board |
-| `br2-external/` | Project 06: Buildroot external tree with two packages, `microzed-modules` (our kernel modules, installed in `/lib/modules/<version>/microzed/`) and `microzed-apps` (`hello`, `blink`, `adcread`) |
-| `fpga/` | FPGA (PL) sources: Verilog, Vivado Tcl scripts; projects are built outside the repo |
-| `projects/` | Briefs for the next projects (FPGA side), one per session |
+## What is in each folder
 
-Not in git: the SSH host keys in `~/mz-overlay/etc/dropbear/` (private).
+**apps/** (installed in `/usr/bin`)
+- `hello.c`: cross-compile test.
+- `blink.c`: blinks LED D3 until PB1 is pressed (libgpiod v1; `rmmod myled_irq` first).
+- `adcread.c`: reads the ADC stream and checks every sample for loss. `/dev/adcstream` by default, `-i` the IIO device, `-f file` a recording; `-m` zero copy, `-s` skim, `-c` CSV.
+- `adcserve.c`: sends the ADC stream to the laptop over TCP (default) or UDP (`-u`), port 5000.
 
-## Get the files on the Mint laptop
+**modules/** (installed in `/lib/modules/<version>/microzed/`, load with `modprobe`)
+- `hello/`: minimal module, a template for quick experiments (not in the package).
+- `myled-irq/`: LED D3 and button PB1. `/dev/myled` (write `1`, `0`, `t`), `/dev/mybutton` (blocks until a press).
+- `axiregs/`: project 02, AXI register block (sysfs `reg0`, `reg1`, `sum`, `count`, `id`).
+- `pltimer/`: project 03, PL timer interrupt, `/dev/pltimer` blocks until the next tick.
+- `dmaloop/`: project 04, AXI DMA loopback test (sysfs `size`, `run`, `result`).
+- `adcstream/`: project 05, simulated ADC stream, `/dev/adcstream` (read or mmap), sysfs settings.
+- `adciio/`: project 07, the same ADC as a standard IIO device `adcsim`.
 
-First time:
+Each module folder also has its own Makefile, to build and copy one module by hand (`make`, `make push`, then `insmod /root/<name>.ko` on the board).
+
+**overlay/**
+- `etc/init.d/S30myled`: loads myled_irq at boot.
+- `etc/init.d/S40pl` + `etc/default/pl`: programs the PL with `/lib/firmware/pl.bin`, then loads the drivers for that design. `ADC_DRIVER=adcstream` (default) or `adciio`.
+- `etc/init.d/S90httpd`: BusyBox web server.
+- `etc/init.d/S95adcserve` + `etc/default/adcserve`: TCP and UDP sample servers (`ADCSERVE=no` turns them off).
+- `etc/network/interfaces`: eth0 DHCP, fixed MAC `02:0a:35:00:00:01` (board IP 10.0.0.134).
+- `srv/www/`: status page (`cgi-bin/status`, `control`, `index.cgi`) and live ADC chart (`scope.html`, `cgi-bin/adc`).
+- `usr/bin/*-bench`: highest lossless rate tests (`dmaloop-bench`, `adcstream-bench`, `adciio-bench`).
+
+**tools/** (laptop, Python 3 + numpy, matplotlib for `--plot`)
+- `adcrecv.py`: receives from adcserve, checks for loss, records (`-o`), live plot + FFT (`--plot`).
+- `adcnet-bench`: highest lossless rate over the network (sets each rate over ssh).
+- `iio_check.py`: checks a recording (`iio_readdev` or `adcrecv.py -o`): loss, frequency, sine fit.
+
+Not in git: the board's SSH host keys (`~/mz-overlay/etc/dropbear/`) and `~/mz-overlay/root/.ssh/`.
+
+## Setup (once, on the laptop)
 
 ```bash
 git clone https://github.com/Fuzzyvolt/microzed-linux.git ~/microzed-linux
 ```
 
-After that, to get updates:
-
-```bash
-cd ~/microzed-linux && git pull
-```
-
-## Buildroot packages (one-time setup)
-
-Our kernel modules and programs are built by Buildroot, as packages in `br2-external/`. Buildroot builds the modules against its kernel, installs them in `/lib/modules/<kernel version>/microzed/` and runs `depmod`, so `modprobe myled_irq` works.
-
-Point the Buildroot build at the external tree (run on the laptop, once; Buildroot remembers the path in `~/br-microzed/.config`):
+Point Buildroot at the external tree. In menuconfig, "External options": enable `microzed-apps` (it selects `microzed-modules` and libgpiod):
 
 ```bash
 cd ~/br-microzed && make BR2_EXTERNAL=$HOME/microzed-linux/microzed/br2-external menuconfig
 ```
 
-In menuconfig: "External options" -> enable `microzed-apps` (it selects `microzed-modules` and libgpiod). Save, then:
+Other Buildroot settings this repo needs (all already done, details in the project md):
+- Kernel -> "Additional configuration fragment files": `/home/fabio/microzed-linux/microzed/configs/linux.fragment`
+- BusyBox -> "Additional BusyBox configuration fragment files": `/home/fabio/mz-busybox.fragment` (same content as `configs/busybox.fragment`)
+- System configuration -> post-image scripts: `/home/fabio/microzed-linux/microzed/board/post-image-dt.sh` **before** `board/zynq/post-image.sh`
+- `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`; Target packages: dropbear, libgpiod (v1) with tools, ethtool, libiio with test programs
+
+For key login (no password prompts during `make push`):
 
 ```bash
-cd ~/microzed-linux/microzed && make clean && make flash
+ssh-copy-id root@10.0.0.134
 ```
 
-`make clean` removes old hand-built `.o`/`.ko` files from `modules/*/`.
+## Day to day
 
-## Use
+Get the latest files:
 
 ```bash
-cd ~/microzed-linux/microzed
-make            # rebuild the two packages in Buildroot (after editing modules/ or apps/)
-make push       # also copy them to the running board (no re-flash)
+cd ~/microzed-linux && git pull
+```
+
+Then, in `~/microzed-linux/microzed`:
+
+```bash
+make            # rebuild both packages in Buildroot
+make push       # also copy everything to the running board (no re-flash)
 make overlay    # copy overlay files and the bitstream into ~/mz-overlay
-make flash      # everything, then write the SD card
+make flash      # everything, then write the SD card (SD=/dev/sdc if not sdb)
 ```
 
-Buildroot does not notice changes in `modules/` or `apps/`; `make` here runs `make microzed-modules-rebuild microzed-apps-rebuild` in `~/br-microzed`, which copies the sources again and rebuilds them.
+- `make push` is enough for module, program and script changes.
+- `make flash` is needed for device tree, kernel, BusyBox or Buildroot changes, and to make changes permanent.
+- Buildroot does not notice edits in `modules/` or `apps/`; `make` here runs `make microzed-modules-rebuild microzed-apps-rebuild` in `~/br-microzed`.
+- After a kernel change, run `make` here too.
+- The bitstream comes from `~/vivado/` (built with `fpga/*/build.tcl`). The newest built design is installed as `/lib/firmware/pl.bin`: project 05, else 04, else 03.
 
-After a kernel change (`make linux-rebuild`, new kernel config fragment), run `make` here too: Buildroot does not rebuild packages that depend on the kernel by itself. A full `make clean && make` in `~/br-microzed` rebuilds everything in the right order.
+## Try it on the board
 
-`make push` asks for the root password several times unless you set up a key with `ssh-copy-id root@10.0.0.134`.
+All commands run on the board (`ssh root@10.0.0.134`) unless marked laptop.
 
-## LED daemon (retired)
-
-Replaced by the myled_irq kernel driver, which is loaded at boot. To use the daemon again, copy `apps/leddaemon.init` to `/etc/init.d/S99leddaemon` and unload the driver first.
-
-
-- Commands: `echo on > /tmp/led.fifo` (also `off`, `toggle`).
-- PB1 toggles the LED.
-- State for the web page: `/tmp/led.state`.
-- Logs: `logread | grep leddaemon` (or `/var/log/messages`).
-- Debug in the foreground: stop the service, then run `leddaemon -f`.
-- `blink` and `gpioset` on lines 47/51 fail with "Device or resource busy" while the daemon runs. Stop it first.
-
-## Flash the SD card in one step
+LED and button (myled_irq):
 
 ```bash
-make flash
+echo t > /dev/myled; cat /dev/mybutton
 ```
 
-This copies the overlay, rebuilds the Buildroot image, then runs `flash-sd.sh`: it checks that `/dev/sdb` is a removable card (never the PC's own disk), shows it, asks you to type `yes`, unmounts, writes with `dd`, syncs and ejects. Use `make flash SD=/dev/sdc` if the card has another name, or `./flash-sd.sh` to flash the existing image without rebuilding.
-
-## Kernel modules
-
-Each module has its own folder and Makefile, which builds against the kernel tree Buildroot built (`~/br-microzed/build/linux-*`).
+AXI registers (project 02):
 
 ```bash
-cd ~/microzed-linux/microzed/modules/hello
-make            # builds hello.ko
-make push       # copies it to the board's /root/
+cd /sys/bus/platform/devices/43c00000.axiregs && echo 5 > reg0 && echo 16 > reg1 && cat sum id
 ```
 
-On the board:
+PL timer (project 03):
 
 ```bash
-insmod /root/hello.ko
-dmesg | tail -3
-rmmod hello
+cat /dev/pltimer
 ```
 
-A module only loads into the exact kernel it was built against. After a kernel change in Buildroot, rebuild the module.
-
-### myled (character driver)
+DMA loopback (project 04, needs the project 04 bitstream):
 
 ```bash
-cd ~/microzed-linux/microzed/modules/myled && make push
+dmaloop-bench
 ```
 
-On the board (stop leddaemon first, only one user of the LED line at a time):
+ADC stream (project 05), chart at `http://10.0.0.134/scope.html`:
 
 ```bash
-/etc/init.d/S99leddaemon stop
-insmod /root/myled.ko
-echo 1 > /dev/myled
-cat /dev/myled
-rmmod myled
-/etc/init.d/S99leddaemon start
+adcread -t 10
 ```
 
-### myled-dt (device tree + platform driver)
-
-One-time setup on the laptop:
+ADC as an IIO device (project 07):
 
 ```bash
-sudo apt install device-tree-compiler
-cd ~/br-microzed && make menuconfig
+/etc/init.d/S40pl stop; ADC_DRIVER=adciio /etc/init.d/S40pl start; iio_readdev -b 8192 -s 1000000 adcsim > /tmp/adc.bin; adcread -f /tmp/adc.bin
 ```
 
-System configuration -> "Custom scripts to run after creating filesystem images": put
-`/home/fabio/microzed-linux/microzed/board/post-image-dt.sh` in front of what is already there (keep the genimage script after it). Then `make flash`.
-
-On the board: check the node with `ls /proc/device-tree/myled`, then load the driver (stop leddaemon and `rmmod myled` first):
+Stream to the laptop (project 08), run on the laptop:
 
 ```bash
-insmod /root/myled_dt.ko
-ls /sys/bus/platform/drivers/myled/
-echo 1 > /dev/myled
+cd ~/microzed-linux/microzed/tools && python3 adcrecv.py --plot
 ```
 
-### myled-irq (button interrupt)
-
-Needs `button-gpios` in the node: re-run `make flash` after pulling (the post-image script adds it).
-
-```bash
-cd ~/microzed-linux/microzed/modules/myled-irq && make push
-```
-
-On the board (stop leddaemon, `rmmod` any other myled module first):
-
-```bash
-insmod /root/myled_irq.ko
-cat /dev/mybutton            # prints "press N" on every PB1 press, Ctrl-C to stop
-grep myled /proc/interrupts  # interrupt count
-```
-
-## Driver at boot (current setup)
-
-- The `microzed-modules` package installs `myled_irq.ko` in `/lib/modules/<kernel version>/microzed/`; `/etc/init.d/S30myled` loads it at boot with `modprobe myled_irq`.
-- `make push` stops and removes leddaemon on the board, unloads any myled module, copies the modules, programs and scripts, and loads the driver.
-- The web page writes to `/dev/myled` and reads the LED state from it.
-- By hand: `/etc/init.d/S30myled start|stop|restart`, or `modprobe myled_irq` / `rmmod myled_irq`.
-
-## AXI register block (project 02)
-
-- Since project 03, the axiregs block is part of the project 03 bitstream (`mz03_pltimer.bin`), loaded by `/etc/init.d/S40pl`. The project 02 bitstream (`fpga/02-axiregs/build.tcl`, `axiregs.bin`) is no longer installed.
-- The `microzed-modules` package builds and installs `axiregs.ko` (like all our modules).
-- The driver needs the `axiregs@43c00000` device tree node: `make flash` after pulling (the post-image script adds it).
-
-On the board:
-
-```bash
-cd /sys/bus/platform/devices/43c00000.axiregs
-echo 5 > reg0; echo 0x10 > reg1; cat sum     # 21
-cat count; cat count                          # rises by ~100 million per second
-cat id                                        # 0x4d5a0201
-```
-
-Never read `0x43C00000` (devmem or driver) before the bitstream is loaded: the CPU hangs until a power cycle.
-
-## PL timer (project 03)
-
-- `fpga/03-pltimer/build.tcl` makes `~/vivado/mz03_pltimer/mz03_pltimer.bin` (axiregs + pltimer, see `fpga/README.md`).
-- `make overlay` / `make push` install the bitstream as `/lib/firmware/pl.bin` (the newest built design).
-- At boot, `/etc/init.d/S40pl` programs the PL, then loads axiregs and pltimer. By hand: `/etc/init.d/S40pl start|stop|restart`.
-- The driver needs the `pltimer@43c10000` node (with `interrupts = <0 29 4>`): `make flash` after pulling.
-
-On the board:
-
-```bash
-cat /dev/pltimer                      # one line per tick (default every 1 s), Ctrl-C to stop
-cd /sys/bus/platform/devices/43c10000.pltimer
-echo 100000 > period_us               # 100 ms
-cat ticks pl_ticks missed stats
-grep pltimer /proc/interrupts
-```
-
-
-## AXI DMA loopback (project 04)
-
-- One-time: Buildroot menuconfig -> Kernel -> "Additional configuration fragment files" = `/home/fabio/microzed-linux/microzed/configs/linux.fragment`, then `make linux-reconfigure && make` in `~/br-microzed`. It makes the Xilinx DMA driver a module: built in, it would hang the boot (it reads the DMA registers before the PL is programmed).
-- `post-image-dt.sh` writes the DMA nodes with `status = "okay"` only if the kernel has `CONFIG_XILINX_DMA=m`; otherwise disabled, with a warning.
-- `fpga/04-dma-loopback/build.tcl` builds the bitstream (project 03 design + DMA); `make flash` installs everything.
-- At boot `S40pl` loads `pl.bin`, axiregs, pltimer, then (axiregs ID `0x4d5a04xx` only) `xilinx_dma` and `dmaloop`.
-
-On the board:
-
-```bash
-cd /sys/bus/platform/devices/dmaloop
-echo 65536 > size; echo 100 > run; cat result
-dmaloop-bench          # table for 1 KB .. 4 MB
-```
-
-## DMA data stream, simulated ADC (project 05)
-
-- `fpga/05-adc-stream/build.tcl` builds `~/vivado/mz05_adc/mz05_adc.bin` (project 04 design, with `adcsim` at `0x43C20000` feeding the DMA's S2MM side). Once built, `make overlay` / `make push` install it as `/lib/firmware/pl.bin`.
-- The driver needs the `adcstream@43c20000` node: `make flash` after pulling.
-- At boot `S40pl` loads the bitstream, axiregs, pltimer, then (axiregs ID `0x4d5a05xx` only) `xilinx_dma` and `adcstream`. The stream starts at load: 1 MSa/s, 1 kHz sine, blocks of 4096 samples.
-
-On the board:
-
-```bash
-cd /sys/bus/platform/devices/43c20000.adcstream
-cat status
-adcread -t 60                 # 60 s, one line per second, summary at the end
-echo 5000000 > rate           # 5 MSa/s (100 MHz / 20)
-echo 0 > enable; echo 16384 > block_samples; echo 1 > enable
-adcstream-bench 10 32768      # highest rate with no loss
-adcstream-bench 10 32768 -m -s   # zero copy, no per-sample work
-```
-
-Live chart: `http://10.0.0.134/scope.html` (also linked from the status page).
-
-## The ADC as an IIO device (project 07)
-
-- `modules/adciio/adciio.c`: driver for the same hardware as adcstream (same bitstream, same device tree node), but as a standard IIO device named `adcsim`. The buffer is the kernel's IIO DMA engine buffer. Needs the two kernel options in `configs/linux.fragment` and libiio in Buildroot (see `buildroot-microzed-project.md`).
-- Only one of adcstream / adciio can be loaded. `S40pl` picks it from `ADC_DRIVER` in `/etc/default/pl` (default `adcstream`, so the web chart keeps working).
-
-On the board:
-
-```bash
-/etc/init.d/S40pl stop; ADC_DRIVER=adciio /etc/init.d/S40pl start
-iio_info                                   # lists xadc and adcsim
-iio_attr -c adcsim voltage0                # channel attributes
-iio_readdev -b 8192 -s 1000000 adcsim > /tmp/adc.bin   # 1 s at 1 MSa/s
-adcread -f /tmp/adc.bin                    # sequence check of the recording
-adcread -i -t 10                           # read the IIO device directly
-adciio-bench 10 16384                      # highest rate with no loss
-```
-
-The stream runs only while the IIO buffer is enabled (`iio_readdev`, `adcread -i`), not from load as with adcstream.
-
-## Stream to the laptop (project 08)
-
-```
-board: /dev/adcstream --> adcserve --TCP or UDP, port 5000--> laptop: tools/adcrecv.py
-```
-
-- `adcserve` (board) opens `/dev/adcstream` only while a laptop receives. Settings stay in sysfs. `/etc/init.d/S95adcserve` starts a TCP and a UDP server at boot (logs in `/var/log/adcserve-*.log`).
-- TCP: one text header line (`ADCSERVE 1 proto=tcp rate=... block=...`), then raw 32-bit words, same format as `iio_readdev`.
-- UDP: the laptop sends `start`, the board answers with the header, then datagrams of `MZD1` + datagram number + sample count + samples (365 samples = 1472 bytes, one Ethernet frame). The laptop sends `keep` every second; the board stops 3 s after the last one.
-
-On the laptop (needs `python3-numpy`, `python3-matplotlib`):
-
-```bash
-cd ~/microzed-linux/microzed/tools
-python3 adcrecv.py -t 60                  # TCP, 60 s, one line per second
-python3 adcrecv.py --plot                 # live plot + FFT
-python3 adcrecv.py -t 10 -o rec.bin       # record, then: python3 iio_check.py rec.bin --rate 1000000 --plot
-python3 adcrecv.py --udp -t 60            # UDP
-./adcnet-bench 10 32768                   # TCP rates 100 k .. 33 M; --udp for UDP
-```
-
-By hand on the board (stop the boot servers first): `/etc/init.d/S95adcserve stop`, then `adcserve` or `adcserve -u`.
+Never read a PL address (`devmem` or a driver) before the bitstream is loaded: the CPU hangs until a power cycle. `S40pl` and the drivers check this.
