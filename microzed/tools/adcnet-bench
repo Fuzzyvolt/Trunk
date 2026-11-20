@@ -1,0 +1,74 @@
+#!/bin/bash
+# adcnet-bench [--udp] [seconds] [block_samples] [-- adcrecv.py options]
+#
+# Runs on the LAPTOP. Like adcstream-bench on the board, but through the
+# network: sets each sample rate on the board (over ssh), receives for N
+# seconds with adcrecv.py, and prints one line per rate: samples lost on the
+# laptop, the driver's overruns and PL drops, and the board's CPU load.
+# The highest rate with 0 lost is the network limit.
+#
+# adcserve must already run on the board (adcserve, or adcserve -u for --udp;
+# /etc/init.d/S95adcserve starts both).
+#
+#   ./adcnet-bench                   TCP, 10 s per rate, current block size
+#   ./adcnet-bench 10 32768          32768-sample blocks (restarts the stream)
+#   ./adcnet-bench --udp 10 32768
+#   BOARD=10.0.0.135 ./adcnet-bench
+#
+# Use 32768-sample blocks, not 65536: a whole lost block of 65536 wraps the
+# 16-bit sequence number exactly and does not show as lost.
+# Needs ssh key login to the board (ssh-copy-id), or it asks for the password
+# several times per rate.
+
+BOARD=${BOARD:-10.0.0.134}
+S=/sys/bus/platform/devices/43c20000.adcstream
+HERE=$(dirname "$0")
+PROTO=
+if [ "$1" = "--udp" ]; then PROTO=--udp; shift; fi
+SECS=${1:-10}
+BS=$2
+shift $(( $# < 2 ? $# : 2 ))
+[ "$1" = "--" ] && shift
+OPTS="$*"
+RATES="100000 1000000 2000000 5000000 10000000 15000000 20000000 25000000 33333333"
+
+b() { ssh -o BatchMode=yes root@"$BOARD" "$@"; }
+
+b "test -d $S" || { echo "no adcstream on $BOARD (ssh key login? driver loaded?)"; exit 1; }
+if [ -n "$BS" ]; then
+  b "echo 0 > $S/enable; echo $BS > $S/block_samples && echo 1 > $S/enable" || exit 1
+fi
+OLD=$(b "cat $S/rate")
+
+# Board counters in one ssh call: CPU total and idle (/proc/stat), overruns, PL drops.
+snap() {
+  b "awk '/^cpu /{print \$2+\$3+\$4+\$5+\$6+\$7+\$8, \$5+\$6}' /proc/stat; cat $S/overruns $S/pl_dropped" | tr '\n' ' '
+}
+
+echo "${PROTO:-tcp} to $BOARD, block_samples $(b "cat $S/block_samples"), $SECS s per rate, adcrecv options: ${OPTS:-none}"
+printf "%10s %11s %7s %9s %9s %10s %9s %5s\n" rate Sa/s MB/s lost overruns pl_dropped dg_lost cpu%
+for r in $RATES; do
+  if ! b "echo $r > $S/rate" 2>/dev/null; then
+    echo "$r: rate rejected by the driver, skipped"
+    continue
+  fi
+  set -- $(snap); t0=$1; i0=$2; o0=$3; d0=$4
+  line=$(python3 "$HERE/adcrecv.py" --host "$BOARD" $PROTO -q -t "$SECS" $OPTS | grep '^summary')
+  set -- $(snap); t1=$1; i1=$2; o1=$3; d1=$4
+  # summary proto=.. seconds=.. rate=.. samples=.. lost=.. gaps=.. Sa/s=.. MB/s=.. [dgram_lost=..]
+  rate=$r lost=? sas=? mbs=? dgl=-
+  for kv in $line; do
+    case $kv in
+      rate=*) rate=${kv#*=} ;;
+      lost=*) lost=${kv#*=} ;;
+      Sa/s=*) sas=${kv#*=} ;;
+      MB/s=*) mbs=${kv#*=} ;;
+      dgram_lost=*) dgl=${kv#*=} ;;
+    esac
+  done
+  cpu=$(( (t1 - t0 - (i1 - i0)) * 100 / (t1 - t0 + 1) ))
+  printf "%10s %11s %7s %9s %9s %10s %9s %5s\n" "$rate" "$sas" "$mbs" "$lost" \
+    "$((o1 - o0))" "$((d1 - d0))" "$dgl" "$cpu"
+  sleep 1   # let adcserve notice the end of the session
+done
+b "echo $OLD > $S/rate"

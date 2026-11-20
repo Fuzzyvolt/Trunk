@@ -21,6 +21,10 @@ Source for the programs and the Buildroot rootfs overlay used in `buildroot-micr
 | `modules/adciio/` | Project 07: the same simulated ADC as a standard IIO device `adcsim` (IIO DMA engine buffer, `sampling_frequency`, `in_voltage0_*`), for `iio_info`, `iio_readdev` |
 | `overlay/usr/bin/adciio-bench` | Project 07: `adcstream-bench` through the IIO driver |
 | `overlay/etc/default/pl` | Project 07: `ADC_DRIVER=adcstream` or `adciio`, read by `S40pl` |
+| `apps/adcserve.c` | Project 08: sends `/dev/adcstream` to the laptop over TCP (default) or UDP (`-u`), port 5000; `-m` zero copy |
+| `tools/adcrecv.py` | Project 08: runs on the laptop; receives from adcserve, checks sequence numbers, prints rate/losses, records (`-o`), live plot + FFT (`--plot`) |
+| `tools/adcnet-bench` | Project 08: runs on the laptop; highest lossless rate over the network, one line per rate (sets the rate over ssh) |
+| `overlay/etc/init.d/S95adcserve`, `overlay/etc/default/adcserve` | Project 08: start the TCP and UDP servers at boot (`ADCSERVE=no` to turn off) |
 | `tools/iio_check.py` | Project 07: runs on the laptop; checks an `iio_readdev` recording (lost samples, min/max, frequency, sine fit, `--plot`) |
 | `overlay/usr/bin/adcstream-bench` | Project 05: runs `adcread` at rising sample rates to find the highest one with no loss |
 | `overlay/srv/www/scope.html`, `overlay/srv/www/cgi-bin/adc` | Project 05: live chart of the stream, with rate/frequency/mode settings |
@@ -277,3 +281,26 @@ adciio-bench 10 16384                      # highest rate with no loss
 ```
 
 The stream runs only while the IIO buffer is enabled (`iio_readdev`, `adcread -i`), not from load as with adcstream.
+
+## Stream to the laptop (project 08)
+
+```
+board: /dev/adcstream --> adcserve --TCP or UDP, port 5000--> laptop: tools/adcrecv.py
+```
+
+- `adcserve` (board) opens `/dev/adcstream` only while a laptop receives. Settings stay in sysfs. `/etc/init.d/S95adcserve` starts a TCP and a UDP server at boot (logs in `/var/log/adcserve-*.log`).
+- TCP: one text header line (`ADCSERVE 1 proto=tcp rate=... block=...`), then raw 32-bit words, same format as `iio_readdev`.
+- UDP: the laptop sends `start`, the board answers with the header, then datagrams of `MZD1` + datagram number + sample count + samples (365 samples = 1472 bytes, one Ethernet frame). The laptop sends `keep` every second; the board stops 3 s after the last one.
+
+On the laptop (needs `python3-numpy`, `python3-matplotlib`):
+
+```bash
+cd ~/microzed-linux/microzed/tools
+python3 adcrecv.py -t 60                  # TCP, 60 s, one line per second
+python3 adcrecv.py --plot                 # live plot + FFT
+python3 adcrecv.py -t 10 -o rec.bin       # record, then: python3 iio_check.py rec.bin --rate 1000000 --plot
+python3 adcrecv.py --udp -t 60            # UDP
+./adcnet-bench 10 32768                   # TCP rates 100 k .. 33 M; --udp for UDP
+```
+
+By hand on the board (stop the boot servers first): `/etc/init.d/S95adcserve stop`, then `adcserve` or `adcserve -u`.

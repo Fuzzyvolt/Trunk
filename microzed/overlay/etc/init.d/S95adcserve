@@ -1,0 +1,37 @@
+#!/bin/sh
+# Start/stop the network sample servers (project 08): adcserve on TCP port
+# 5000 and adcserve -u on UDP port 5000, in the background. Each opens
+# /dev/adcstream only while a laptop is receiving. Logs: /var/log/adcserve-tcp.log,
+# /var/log/adcserve-udp.log (one line per session, -q).
+# Options for both from /etc/default/adcserve (ADCSERVE_OPTS, e.g. "-m").
+# No authentication: keep port 5000 inside the home network.
+
+[ -f /etc/default/adcserve ] && . /etc/default/adcserve
+
+start() {
+  [ "$ADCSERVE" = "no" ] && { echo "adcserve disabled in /etc/default/adcserve"; return 0; }
+  echo "Starting adcserve (TCP and UDP port 5000)"
+  # TCP send buffer = slack for network pauses (Wi-Fi): while the laptop
+  # does not acknowledge, samples wait here instead of overflowing the
+  # driver's small ring. Linux caps SO_SNDBUF at wmem_max (default ~200 KB).
+  SNDBUF=${ADCSERVE_SNDBUF:-33554432}
+  echo $SNDBUF > /proc/sys/net/core/wmem_max
+  start-stop-daemon -S -b -m -p /var/run/adcserve-tcp.pid -x /bin/sh -- \
+    -c "exec /usr/bin/adcserve -q -S $SNDBUF $ADCSERVE_OPTS >> /var/log/adcserve-tcp.log 2>&1"
+  start-stop-daemon -S -b -m -p /var/run/adcserve-udp.pid -x /bin/sh -- \
+    -c "exec /usr/bin/adcserve -u -q $ADCSERVE_OPTS >> /var/log/adcserve-udp.log 2>&1"
+}
+
+# By name: the pid files did not always match the running process (seen on
+# the board: "killing process 323: No such process" while adcserve ran).
+stop() {
+  killall -q adcserve
+  rm -f /var/run/adcserve-tcp.pid /var/run/adcserve-udp.pid
+}
+
+case "$1" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; sleep 1; start ;;
+  *) echo "usage: $0 start|stop|restart"; exit 1 ;;
+esac

@@ -1,0 +1,8 @@
+# Read by /etc/init.d/S95adcserve (project 08).
+# ADCSERVE=no: do not start the network sample servers at boot.
+ADCSERVE=yes
+# Extra options for both servers, e.g. "-m" (zero copy) or "-S 1048576" (send buffer).
+ADCSERVE_OPTS=""
+# TCP send buffer in bytes (slack for network pauses; about half of it holds
+# data, so 32 MiB = ~4 s at 1 MSa/s). Also written to net.core.wmem_max.
+ADCSERVE_SNDBUF=33554432

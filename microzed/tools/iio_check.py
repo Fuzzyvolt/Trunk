@@ -64,13 +64,18 @@ def main():
         spec = np.abs(np.fft.rfft(run * np.hanning(run.size)))
         k = int(np.argmax(spec[1:])) + 1
         f = k * a.rate / run.size
+        n_fft = run.size
         # Least-squares sine at that frequency: how close is the data to it?
+        # Only over the first 0.1 s (at least 20 periods): over a long run a
+        # frequency error far below the FFT bin adds up to a phase drift and
+        # spoils the fit even for a perfect sine.
+        run = run[:max(int(0.1 * a.rate), int(20 * a.rate / f))]
         t = np.arange(run.size) / a.rate
         m = np.column_stack((np.sin(2 * np.pi * f * t), np.cos(2 * np.pi * f * t)))
         coef, *_ = np.linalg.lstsq(m, run, rcond=None)
         amp = float(np.hypot(*coef))
         rms = float(np.sqrt(np.mean((run - m @ coef) ** 2)))
-        print(f"frequency {f:.1f} Hz (FFT bin {a.rate / run.size:.2f} Hz, {run.size} samples)")
+        print(f"frequency {f:.1f} Hz (FFT bin {a.rate / n_fft:.2f} Hz, {n_fft} samples)")
         print(f"sine fit  amplitude {amp:.0f} LSB, RMS error {rms:.1f} LSB"
               f"  ({'looks like a sine' if rms < 0.02 * amp else 'not a clean sine (saw mode?)'})")
 

@@ -12,7 +12,7 @@ The order matters: each project builds on the ones before it.
 | 05 | [DMA data stream (simulated ADC)](05-dma-data-stream.md) (done) | No |
 | 06 | [Buildroot package for our modules](06-buildroot-package.md) (done) | No |
 | 07 | [ADC stream as an IIO device](07-iio-adc-driver.md) (done) | No |
-| 08 | [Stream samples to the laptop over the network](08-network-stream.md) | No |
+| 08 | [Stream samples to the laptop over the network](08-network-stream.md) (done) | No |
 
 Later, with a MicroHeader breakout or carrier card (all PL pins only reach the MicroHeaders):
 PWM outputs (LED dimming, servos), an SPI ADC or pressure sensor sampled by the PL, a FIR filter in the DSP slices.
