@@ -11,7 +11,7 @@ This is the "hello world" of Zynq: it covers the whole flow (Vivado design -> bi
 ## Builds on
 
 - 01 (Vivado works).
-- `myled-dt` / `myled-irq` drivers: platform driver, `compatible`, `probe()`, `devm_*` (see `microzed/modules/`).
+- `myled-irq` driver: platform driver, `compatible`, `probe()`, `devm_*` (see `microzed/modules/`).
 - `post-image-dt.sh`: how we add nodes to the `.dtb`.
 
 ## Steps (outline)
