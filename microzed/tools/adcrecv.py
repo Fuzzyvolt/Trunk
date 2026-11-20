@@ -100,6 +100,7 @@ class Receiver:
         self.dgrams = 0           # UDP: datagrams received
         self.dg_lost = 0          # UDP: gaps in the datagram numbers
         self.dg_odd = 0           # UDP: out of order / duplicates / bad magic
+        self.dg_reordered = 0     # UDP: batches that needed sorting
         self.next_dg = None
         self.t0 = None
 
@@ -216,6 +217,14 @@ class Receiver:
             rows = rows[good]
             if rows.shape[0] == 0:
                 return
+        # Put the batch back in order: Wi-Fi can swap datagrams, and a swap
+        # would look like a big gap (sequence numbers going backwards wrap
+        # to ~65535). Duplicates are dropped. Only a swap across two batches
+        # still shows (as dgram_odd and a false gap): rare.
+        _, first = np.unique(rows[:, 1], return_index=True)
+        if first.size != rows.shape[0] or np.any(np.diff(rows[:, 1].astype(np.int64)) < 0):
+            self.dg_reordered += 1
+            rows = rows[first]            # np.unique returns them sorted
         dseq = rows[:, 1]
         count = rows[:, 2]
         # Lost datagrams: gaps in their numbers (u32, never wraps in practice).
@@ -270,7 +279,8 @@ class Receiver:
                 f"samples={c.samples} lost={c.lost} gaps={c.gaps} Sa/s={c.samples / t:.0f} "
                 f"MB/s={c.samples * 4 / t / 1e6:.1f}")
         if self.info.get("proto") == "udp":
-            line += f" datagrams={self.dgrams} dgram_lost={self.dg_lost} dgram_odd={self.dg_odd}"
+            line += (f" datagrams={self.dgrams} dgram_lost={self.dg_lost} dgram_odd={self.dg_odd}"
+                     f" reordered_batches={self.dg_reordered}")
         print(line)
         if c.samples:
             print(f"values min {c.vmin} max {c.vmax}")
