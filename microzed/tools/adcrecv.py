@@ -19,6 +19,11 @@ A recording is the same format as iio_readdev's, so iio_check.py reads it:
 
     python3 iio_check.py rec.bin --rate 1000000 --plot
 
+The sequence number has 16 bits: a gap of k samples could really be
+k + 65536, k + 2 x 65536, ... (16 lost blocks of 4096 look like none). The
+board's count of whole lost blocks is "overruns" in adcserve's output
+(/var/log/adcserve-tcp.log for the boot server): check it too.
+
 Exit status: 0 if nothing was lost, 1 otherwise.
 
 Needs numpy (sudo apt install python3-numpy python3-matplotlib).

@@ -11,8 +11,13 @@
 start() {
   [ "$ADCSERVE" = "no" ] && { echo "adcserve disabled in /etc/default/adcserve"; return 0; }
   echo "Starting adcserve (TCP and UDP port 5000)"
+  # TCP send buffer = slack for network pauses (Wi-Fi): while the laptop
+  # does not acknowledge, samples wait here instead of overflowing the
+  # driver's small ring. Linux caps SO_SNDBUF at wmem_max (default ~200 KB).
+  SNDBUF=${ADCSERVE_SNDBUF:-33554432}
+  echo $SNDBUF > /proc/sys/net/core/wmem_max
   start-stop-daemon -S -b -m -p /var/run/adcserve-tcp.pid -x /bin/sh -- \
-    -c "exec /usr/bin/adcserve -q $ADCSERVE_OPTS >> /var/log/adcserve-tcp.log 2>&1"
+    -c "exec /usr/bin/adcserve -q -S $SNDBUF $ADCSERVE_OPTS >> /var/log/adcserve-tcp.log 2>&1"
   start-stop-daemon -S -b -m -p /var/run/adcserve-udp.pid -x /bin/sh -- \
     -c "exec /usr/bin/adcserve -u -q $ADCSERVE_OPTS >> /var/log/adcserve-udp.log 2>&1"
 }
