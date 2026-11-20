@@ -22,11 +22,11 @@ start() {
     -c "exec /usr/bin/adcserve -u -q $ADCSERVE_OPTS >> /var/log/adcserve-udp.log 2>&1"
 }
 
+# By name: the pid files did not always match the running process (seen on
+# the board: "killing process 323: No such process" while adcserve ran).
 stop() {
-  for p in tcp udp; do
-    start-stop-daemon -K -q -p /var/run/adcserve-$p.pid
-    rm -f /var/run/adcserve-$p.pid
-  done
+  killall -q adcserve
+  rm -f /var/run/adcserve-tcp.pid /var/run/adcserve-udp.pid
 }
 
 case "$1" in
