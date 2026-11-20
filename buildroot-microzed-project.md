@@ -81,7 +81,7 @@ Harmless boot messages:
 
 ## Current state (where we stopped)
 
-As of 2026-11-18: **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and our own kernel driver (`myled_irq`, loaded at boot) all work. Project 02 works too: our own AXI register block in the PL, programmed from Linux at boot, with a driver and sysfs files (see "AXI register block" below). Project 03 works: a timer in the PL interrupts Linux every N µs, `/dev/pltimer` blocks until the next tick (see "PL timer with interrupt" below). Project 04 works: an AXI DMA loops buffers DDR -> PL FIFO -> DDR through the kernel's DMA engine framework, up to 393 MB/s (see "AXI DMA loopback" below). Project 05 works: a simulated ADC in the PL streams samples through the DMA into a ring of DDR buffers, read from `/dev/adcstream`, with a live web chart; zero loss at 1 MSa/s for 5 minutes; with every sample checked, no loss up to 25 MSa/s; zero-copy (mmap) reaches the DMA's 98 MSa/s (see "DMA data stream" below). Project 06: modules and programs are Buildroot packages (`modprobe`). Project 07 works: the same ADC as a standard IIO device `adcsim` (`iio_info`, `iio_readdev`, libiio 0.26), no loss up to 25 MSa/s (see "The ADC as an IIO device" below).** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver), `myled-dt` (device tree platform driver) and `myled-irq` (button interrupt, blocking `/dev/mybutton`) also work.
+As of 2026-11-20: **GPIO, SSH (key login), cross-compiled programs, rootfs overlay, a status web page with LED/power-off buttons, and our own kernel driver (`myled_irq`, loaded at boot) all work. Project 02 works too: our own AXI register block in the PL, programmed from Linux at boot, with a driver and sysfs files (see "AXI register block" below). Project 03 works: a timer in the PL interrupts Linux every N µs, `/dev/pltimer` blocks until the next tick (see "PL timer with interrupt" below). Project 04 works: an AXI DMA loops buffers DDR -> PL FIFO -> DDR through the kernel's DMA engine framework, up to 393 MB/s (see "AXI DMA loopback" below). Project 05 works: a simulated ADC in the PL streams samples through the DMA into a ring of DDR buffers, read from `/dev/adcstream`, with a live web chart; zero loss at 1 MSa/s for 5 minutes; with every sample checked, no loss up to 25 MSa/s; zero-copy (mmap) reaches the DMA's 98 MSa/s (see "DMA data stream" below). Project 06: modules and programs are Buildroot packages (`modprobe`). Project 07 works: the same ADC as a standard IIO device `adcsim` (`iio_info`, `iio_readdev`, libiio 0.26), no loss up to 25 MSa/s (see "The ADC as an IIO device" below). Project 08 works: every sample streams to the laptop over TCP or UDP (`adcserve` on the board, `tools/adcrecv.py` on the laptop: sequence check, recording, live plot + FFT); 5 minutes at 1 MSa/s with zero loss; over the laptop's Wi-Fi, TCP is lossless up to 10 MSa/s (see "Network stream" below).** Work has moved to a **second MicroZed**, because the first board's Ethernet PHY is unreliable (see below). Kernel modules `hello`, `myled` (character driver), `myled-dt` (device tree platform driver) and `myled-irq` (button interrupt, blocking `/dev/mybutton`) also work.
 
 1. `~/br-microzed/.config` has: `BR2_EXTERNAL` = `/home/fabio/microzed-linux/microzed/br2-external` with `BR2_PACKAGE_MICROZED_APPS=y` and `BR2_PACKAGE_MICROZED_MODULES=y` (project 06), kernel config fragment `/home/fabio/microzed-linux/microzed/configs/linux.fragment` (`CONFIG_XILINX_DMA=m`), `dropbear`, **libgpiod v1** (`BR2_PACKAGE_LIBGPIOD=y`, `BR2_PACKAGE_LIBGPIOD_TOOLS=y`), **ethtool**, a root password, `BR2_SYSTEM_DHCP="eth0"`, `BR2_ROOTFS_OVERLAY="/home/fabio/mz-overlay"`, and the BusyBox fragment `/home/fabio/mz-busybox.fragment`.
 2. GPIO: `gpiodetect` shows `gpiochip0 [zynq_gpio] (118 lines)` (lines 0-53 = MIO, 54-117 = EMIO). LED D3 and button PB1 are owned by the `myled_irq` kernel driver (`/dev/myled`, `/dev/mybutton`), loaded at boot by `/etc/init.d/S30myled`.
@@ -437,6 +437,55 @@ How the buffer fits the hardware (read from the 6.12 source, `drivers/iio/buffer
 
 Buildroot setup for this project (laptop, once): `make menuconfig` in `~/br-microzed` -> Target packages -> Libraries -> Hardware handling -> `libiio`, with "Install test programs" on (`iio_info`, `iio_attr`, `iio_readdev`, ...); the USB and serial backends can be turned off. "IIO Daemon" (iiod) is optional: it would let the laptop use libiio over the network (`iio_info -u ip:10.0.0.134`). Then `make linux-reconfigure` (kernel fragment) and `make flash` in `microzed/`.
 
+### Network stream to the laptop (project 08, done 2026-11-20)
+
+```
+board                                                   laptop (Wi-Fi)
+/dev/adcstream --> adcserve --TCP port 5000-->  tools/adcrecv.py  (check, record, --plot)
+                           \--UDP port 5000-->  tools/adcrecv.py --udp
+                   S95adcserve starts both at boot  tools/adcnet-bench (rates over ssh)
+```
+
+Files (all in `microzed/`):
+- `apps/adcserve.c` (in the `microzed-apps` package): opens `/dev/adcstream` only while a laptop receives; settings stay in sysfs. Options: `-u` UDP, `-p` port, `-m` zero copy (mmap + ioctl, sends straight from the DMA buffer), `-S` SO_SNDBUF, `-d` samples per datagram, `-q`. Prints per second (or per session with `-q`): Sa/s, MB/s, overruns, PL drops, board CPU (from `/proc/stat`, 50% = one core), datagrams not sent.
+- Protocol: one text line `ADCSERVE 1 proto=tcp rate=... block=... freq=... mode=... dgram=... format=u32le`, then raw 32-bit words (same format as `iio_readdev`). UDP: the laptop sends `start`, gets the line as a datagram, then datagrams of `MZD1` + datagram number (u32) + sample count (u32) + samples, 365 samples = 1472 bytes = one Ethernet frame; one `sendmmsg()` for up to 64 datagrams, each datagram two iovecs (header + slice of the block, no extra copy). The laptop sends `keep` every second; the board stops 3 s after the last one, or at `stop`.
+- `tools/adcrecv.py` (laptop, numpy): sequence check (vectorised), per-second rate/losses, `-o` raw recording, `--plot` live time plot (last 2000 samples) + FFT (last 65536) in matplotlib, receiving in a second thread. UDP: datagrams received in batches into slots of one big buffer, checked with numpy; batch sorted by datagram number (Wi-Fi reorders).
+- `tools/adcnet-bench [--udp] [seconds] [block_samples]` (laptop): sets each rate over ssh, runs adcrecv, reads the board's CPU, overruns and PL drops before/after.
+- `overlay/etc/init.d/S95adcserve` + `overlay/etc/default/adcserve` (`ADCSERVE=no` to turn off, `ADCSERVE_OPTS`, `ADCSERVE_SNDBUF` default 32 MiB, also written to `net.core.wmem_max`). Logs `/var/log/adcserve-{tcp,udp}.log`. `make push` stops the servers before copying (else "Text file busy") and starts them after.
+- `tools/iio_check.py`: sine fit now over the first 0.1 s only (over 10 s a frequency error far below the FFT bin drifts the phase and the fit failed: "not a clean sine" on a perfect one).
+- Tested in the cloud session with a fake device (FIFO + fake sysfs, adcserve built for x86): TCP and UDP byte-identical, injected gaps counted exactly; ARM cross-compile clean.
+
+Results (board 2, laptop on Wi-Fi, 2026-11-20):
+- TCP 1 MSa/s, 300 s: laptop `samples=299995136 lost=0`, board `overruns=0 pl_dropped=0`, CPU 4%.
+- UDP 1 MSa/s, 60 s, 4096-sample blocks: `lost=0 dgram_lost=0`; 176,976 datagrams sent, 176,928 received: the 48 missing = 4 blocks in flight after `stop`. CPU 7% (TCP 4%: many small packets vs TCP's large segments).
+- Recording 10 s: `iio_check.py` lost 0, 1000.0 Hz, clean ±1000 mV sine.
+
+`adcnet-bench`, 10 s per rate:
+
+| Rate | TCP, 32768 blocks | UDP, 4096 blocks | UDP, 32768 blocks |
+|---|---|---|---|
+| 100 k | 0 lost | 0 lost | 245 datagrams lost |
+| 1 M .. 5 M | 0 lost | 0 lost | 4 .. 76 datagrams lost |
+| 10 M | 0 lost, 40 MB/s, CPU 27% | ~6.1 MSa/s only, overruns | 2088 datagrams lost |
+| 14.3 M | at the edge (0 or 2 overruns; 73k PL drops once) | overruns | overruns |
+| ceiling | ~15 MSa/s = 60 MB/s, CPU ~40% | ~6 MSa/s = 24 MB/s, CPU 48% | ~10.8 MSa/s = 43 MB/s, CPU 65% |
+
+- **Highest lossless rate: TCP 10 MSa/s (40 MB/s), UDP 5 MSa/s (4096 blocks).** With 32768-sample blocks UDP is never lossless on Wi-Fi.
+- **TCP's limit here is the Wi-Fi** (~60 MB/s ≈ 480 Mbit/s): `-m` (zero copy) gave the same ceiling, board CPU stayed under one core (~40%) and fell at the top rates (waiting for the network).
+- **UDP bursts:** one block goes out as one burst at gigabit speed (32768 samples = 90 datagrams = 132 KB); the Wi-Fi router cannot queue it and drops some, even at 100 kSa/s. 4096-sample blocks (bursts of 12) lose nothing, but cost one core at ~6 MSa/s (a read, a sendmmsg and a command check per block). TCP paces itself to the network, UDP does not.
+
+Problems found on the way (fixed):
+- **Tiny TCP send buffer.** First 30 s run: laptop `lost=12288` (3 blocks), board `overruns=19`. The log said `socket send buffer 44800 bytes` = 11 ms at 4 MB/s; a Wi-Fi pause blocked `send()`, the driver's ring (~25 ms with 4096 blocks) overflowed. Fix: 32 MiB SO_SNDBUF (Linux caps it at `net.core.wmem_max`, ~200 KB by default, so S95adcserve raises that; getsockopt reports double: 67108864). About 4 s of slack at 1 MSa/s.
+- **19 overruns but only 3 blocks lost on the laptop:** the 16-bit sequence number wraps every 65536 samples = 16 blocks of 4096; a burst of 17 lost blocks shows as 1. Trust zero only when both laptop `lost=0` and board `overruns=0`.
+- **Wi-Fi reorders UDP datagrams:** a swap looked like a gap of ~65535 samples (sequence going backwards) and one lost datagram. adcrecv now sorts each batch by datagram number.
+- **Stale pid file:** `start-stop-daemon -K -p` said "killing process 323: No such process" while adcserve ran. `S95adcserve stop` now uses `killall adcserve`.
+- `make push` asked for the password many times: the key was no longer on the board; `ssh-copy-id root@10.0.0.134` fixed it (the overlay copy in `~/mz-overlay/root/.ssh/` keeps it across re-flashes).
+
+Open:
+- **PL drops under heavy network load:** at 14.3 MSa/s TCP the board showed `overruns=0` but `pl_dropped=73231` once: the DMA had no free buffer for > 0.6 ms (FIFO depth at that rate). Guess (not proven): network interrupt/softirq work delays the DMA completion callback on the same core. Test: put the DMA and Ethernet interrupts on different cores (`/proc/irq/N/smp_affinity`).
+- Board's own network limit not measured (laptop has no Ethernet port): needs a USB 3 gigabit adapter. Expect 100+ MB/s with `-m`.
+- Ethernet pause frames during heavy streaming not checked yet (`ethtool -S eth0 | grep -i pause` before/after).
+
 ### Repo workflow (`~/microzed-linux/microzed`)
 
 All source files now live in the git repo, in `microzed/` (see `microzed/README.md`). Claude writes files there; the laptop gets them with git.
@@ -615,9 +664,17 @@ The next projects are written as self-contained briefs in `microzed/projects/` (
 5. ~~`05-dma-data-stream.md`: simulated ADC stream to a live web chart.~~ Done 2026-11-19 (zero loss at 1 MSa/s for 5 min, up to 14 MSa/s).
 6. `06-buildroot-package.md`: build our modules and programs as Buildroot packages, `modprobe`. Done 2026-11-19.
 7. ~~`07-iio-adc-driver.md`: the ADC stream as a standard IIO device (libiio tools, `iio_readdev`).~~ Done 2026-11-19 (no loss up to 25 MSa/s).
-8. `08-network-stream.md`: every sample to the laptop over TCP, then UDP; Python receiver that checks, records, plots and runs an FFT. The web page stays as the status view; this is the real data channel.
+8. ~~`08-network-stream.md`: every sample to the laptop over TCP, then UDP; Python receiver that checks, records, plots and runs an FFT.~~ Done 2026-11-20 (TCP lossless up to 10 MSa/s over Wi-Fi, UDP up to 5 MSa/s).
 
-Next session: `08-network-stream.md`. Its receiver could use the IIO device: iiod (libiio's network daemon, a Buildroot option) serves it over TCP, `iio_readdev -u ip:10.0.0.134 adcsim` on the laptop; compare with our own TCP/UDP sender.
+Next session: no brief written yet. Choices: a project 08 follow-up below, a hardware project once a MicroHeader breakout is available (SPI ADC, PWM), or QSPI boot / read-only rootfs / watchdog (see "Longer roadmap"). Write the brief first (`microzed/projects/09-*.md`).
+
+Not yet tried in project 08 (optional):
+- Wired test with a USB 3 gigabit Ethernet adapter on the laptop: the board's own TCP/UDP limit, `-m` vs `read()`.
+- PL drops under network load: DMA and Ethernet interrupts on different cores (`grep -E 'dma|eth' /proc/interrupts`, `echo 2 > /proc/irq/N/smp_affinity`).
+- UDP pacing (spread datagrams over the block time, or `SO_MAX_PACING_RATE` with the `fq` qdisc), so big blocks do not overflow the router; or a second thread so reading and sending use both cores.
+- Live plot extras: trigger (stable trace), time window option, rate/frequency controls in the window.
+- iiod (libiio's network daemon) + `iio_readdev -u ip:10.0.0.134 adcsim` on the laptop, compared with adcserve.
+- A 64-bit sample counter in the stream (per-block header), so whole lost blocks never hide behind the 16-bit wrap.
 
 Not yet tried in project 07 (optional):
 - iiod on the board + libiio on the laptop (`iio_info -u ip:10.0.0.134`).
@@ -710,3 +767,11 @@ Note: most PL (FPGA) pins only reach the MicroHeaders on the underside, so PL I/
 - A reader stuck in `read()` keeps the device open: "Device or resource busy" on the next open, `rmmod` fails. `killall` it first.
 - Recent OpenSSH `scp` uses SFTP, which Dropbear does not have: use `scp -O`.
 - libiio 0.x on a mainline kernel prints "High-speed mode not enabled": harmless (ADI's out-of-tree mmap interface).
+- A network sender for a source that cannot wait needs slack for network pauses: on Linux, the TCP send buffer is that slack. The default (tens of KB) holds milliseconds; raise `net.core.wmem_max` and set `SO_SNDBUF`.
+- TCP never loses data on the wire, but it can stall: a real-time source then loses data at the producer (driver overruns). Check both ends.
+- A 16-bit sequence number hides losses of exact multiples of 65536 samples (16 blocks of 4096). Compare with the board's own counters, or use a wider counter.
+- Wi-Fi reorders UDP datagrams: number them and sort before checking, or a swap looks like a huge loss.
+- UDP sends a block as a burst at wire speed; a slower link (Wi-Fi) behind a router drops part of a big burst even at a low average rate. Smaller bursts or pacing fix it; TCP paces itself.
+- Python on the laptop keeps up at tens of MB/s if each chunk or batch of datagrams is handled with numpy, never a Python loop per sample or per datagram.
+- BusyBox `start-stop-daemon -m -p` pid files can go stale: stop daemons with `killall <name>` in init scripts.
+- A laptop's UDP receive buffer is capped at `net.core.rmem_max` (~200 KB): `sudo sysctl -w net.core.rmem_max=8388608` for bursty streams.
